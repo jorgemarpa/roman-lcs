@@ -1,3 +1,6 @@
 .python-version
 site
 dist
+notebooks/.ipynb_checkpoints
+.ruff_cache
+src/roman_lcs/__pycache__

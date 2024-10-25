@@ -4,10 +4,9 @@ import numpy as np
 import numpy.typing as npt
 from typing import Optional
 from scipy import sparse
-from psfmachine.utils import _make_A_cartesian
 import matplotlib.pyplot as plt
 from fbpca import pca
-from .utils import spline1d
+from .utils import spline1d, _make_A_cartesian
 
 
 class PerturbationMatrix(object):
