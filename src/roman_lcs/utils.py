@@ -1,10 +1,11 @@
 """Collection of utility functions"""
 
+from typing import Optional, Tuple, Union
+
 import numpy as np
 import numpy.typing as npt
 from patsy import dmatrix
 from scipy import sparse
-from typing import Optional, Union, Tuple
 
 
 def _make_A_polar(

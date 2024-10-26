@@ -1,12 +1,14 @@
 """Classes to deal with perturbation matrices"""
 
+from typing import Optional
+
+import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
-from typing import Optional
-from scipy import sparse
-import matplotlib.pyplot as plt
 from fbpca import pca
-from .utils import spline1d, _make_A_cartesian
+from scipy import sparse
+
+from .utils import _make_A_cartesian, spline1d
 
 
 class PerturbationMatrix(object):
@@ -44,7 +46,6 @@ class PerturbationMatrix(object):
         bin_method: str = "bin",
         focus_exptime=2,
     ):
-
         self.time = time
         self.other_vectors = np.nan_to_num(other_vectors)
         self.poly_order = poly_order
@@ -170,9 +171,9 @@ class PerturbationMatrix(object):
             k = np.ones(y.shape[0], bool)
         X = self.matrix[k]
         sigma_w_inv = X.T.dot(X.multiply(1 / ye[k, None] ** 2)) + np.diag(
-            1 / self.prior_sigma ** 2
+            1 / self.prior_sigma**2
         )
-        B = X.T.dot(y[k] / ye[k] ** 2) + self.prior_mu / self.prior_sigma ** 2
+        B = X.T.dot(y[k] / ye[k] ** 2) + self.prior_mu / self.prior_sigma**2
         return np.linalg.solve(sigma_w_inv, B)
 
     def fit(self, flux: npt.ArrayLike, flux_err: Optional[npt.ArrayLike] = None):
@@ -299,7 +300,7 @@ class PerturbationMatrix(object):
                     return (
                         np.asarray(
                             [
-                                np.sum(i ** 2, axis=0) / (len(i) ** 2)
+                                np.sum(i**2, axis=0) / (len(i) ** 2)
                                 for i in np.array_split(x, points)
                             ]
                         )
