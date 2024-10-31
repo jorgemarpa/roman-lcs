@@ -17,6 +17,7 @@ from .utils import (
     sparse_lessthan,
     threshold_bin,
     bspline_smooth,
+    _find_uncontaminated_pixels,
 )
 from .perturbation import PerturbationMatrix3D
 from . import __version__
@@ -332,251 +333,100 @@ class Machine(object):
         del r_vals, phi_vals, nnz_inds, sparse_mask
         return
 
-    def _get_source_mask(
-        self,
-        upper_radius_limit=28.0,
-        lower_radius_limit=4.5,
-        upper_flux_limit=2e5,
-        lower_flux_limit=100,
-        correct_centroid_offset=False,
-        plot=False,
-    ):
-        """Find the pixel mask that identifies pixels with contributions from ANY
-        NUMBER of Sources
+    def _get_source_mask(self, source_flux_limit=1, iterations=2, plot=False):
+        """Find the round pixel mask that identifies pixels with contributions from ANY of source
 
-        Fits a simple polynomial model to the log of the pixel flux values, in radial
-        dimension and source flux, to find the optimum circular apertures for every
-        source.
+        Firstly, makes a `rough_mask` that is 1 arcsec in radius. Then fits a simple
+        linear trend in radius and flux. Uses this linear trend to identify pixels
+        that are likely to be over the flux limit, the `source_mask`.
+
+        We then iterate, masking out contaminated pixels in the `source_mask`, to get a better fit
+        to the simple linear trend.
 
         Parameters
         ----------
-        upper_radius_limit: float
-            The radius limit at which we assume there is no flux from a source of
-            any brightness (arcsec)
-        lower_radius_limit: float
-            The radius limit at which we assume there is flux from a source of any
-            brightness (arcsec)
-        upper_flux_limit: float
-            The flux at which we assume as source is saturated
-        lower_flux_limit: float
-            The flux at which we assume a source is too faint to model
-        correct_centroid_offset: bool
-            Correct the dra, ddec arrays from centroid offsets. If centroid offsets are
-            larger than 1 arcsec, `source_mask` will be also updated.
-        plot: bool
-            Whether to show diagnostic plot. Default is False
+        source_flux_limit: float
+            Lower limit at which the source flux meets the background level
         """
-
-        
-
-        # We will use the radius a lot, this is for readibility
-        # don't do if sparse array
-        if isinstance(self.r, u.quantity.Quantity):
-            r = self.r.value
+        self.radius = 5 * self.pixel_scale.to(u.arcsecond).value
+        if not sparse.issparse(self.r):
+            self.rough_mask = sparse.csr_matrix(self.r < self.radius)
         else:
-            r = self.r
-
-        # The max flux, to assume is a generous estimate of the whole stack of images
-        max_flux = np.nanmax(self.flux[self.time_mask], axis=0)
-
-        # Mask out sources that are above the flux limit, and pixels above the
-        # radius limit. This is a good estimation only when using phot_g_mean_flux
-        source_rad = 0.1 * np.log10(self.source_flux_estimates) ** 1.5
-        # temp_mask for the sparse array case should also be a sparse matrix. Then it is
-        # applied to r, max_flux, and, source_flux_estimates to be used later.
-        # Numpy array case:
-        if not isinstance(r, sparse.csr_matrix):
-            # First we make a guess that each source has exactly the gaia flux
-            source_flux_estimates = np.asarray(self.source_flux_estimates)[
-                :, None
-            ] * np.ones((self.nsources, self.npixels))
-            temp_mask = (r < source_rad[:, None]) & (
-                source_flux_estimates < upper_flux_limit
+            self.rough_mask = sparse_lessthan(self.r, self.radius)
+        self.source_mask = self.rough_mask.copy()
+        self.source_mask.eliminate_zeros()
+        self.uncontaminated_source_mask = _find_uncontaminated_pixels(self.source_mask)
+        for count in range(iterations):
+            # self._get_centroid()
+            # self._update_delta_arrays()
+            mask = self.uncontaminated_source_mask
+            r = mask.multiply(self.r).data
+            max_f = np.log10(
+                mask.astype(float)
+                .multiply(np.nanmax(self.flux[self.time_mask], axis=0))
+                .multiply(1 / self.source_flux_estimates[:, None])
+                .data
             )
-            temp_mask &= temp_mask.sum(axis=0) == 1
-
-            # apply temp_mask to r
-            r_temp_mask = r[temp_mask]
-
-            # log of flux values
-            f = np.log10((temp_mask.astype(float) * max_flux))
-            f_temp_mask = f[temp_mask]
-            # weights = (
-            #     (self.flux_err ** 0.5).sum(axis=0) ** 0.5 / self.flux.shape[0]
-            # ) * temp_mask
-
-            # flux estimates
-            mf = np.log10(source_flux_estimates[temp_mask])
-        # sparse array case:
-        else:
-            source_flux_estimates = self.r.astype(bool).multiply(
-                self.source_flux_estimates[:, None]
-            )
-            temp_mask = sparse_lessthan(r, source_rad)
-            temp_mask = temp_mask.multiply(
-                sparse_lessthan(source_flux_estimates, upper_flux_limit)
-            ).tocsr()
-            temp_mask = temp_mask.multiply(temp_mask.sum(axis=0) == 1).tocsr()
-            temp_mask.eliminate_zeros()
-
-            f = np.log10(temp_mask.astype(float).multiply(max_flux).data)
-            k = np.isfinite(f)
-            f_temp_mask = f[k]
-            r_temp_mask = temp_mask.astype(float).multiply(r).data[k]
-            mf = np.log10(
-                temp_mask.astype(float).multiply(source_flux_estimates).data[k]
-            )
-
-        # Model is polynomial in r and log of the flux estimate.
-        # Here I'm using a 1st order polynomial, to ensure it's monatonic in each dimension
-        A = np.vstack(
-            [
-                r_temp_mask ** 0,
-                r_temp_mask,
-                # r_temp_mask ** 2,
-                r_temp_mask ** 0 * mf,
-                r_temp_mask * mf,
-                # r_temp_mask ** 2 * mf,
-                # r_temp_mask ** 0 * mf ** 2,
-                # r_temp_mask * mf ** 2,
-                # r_temp_mask ** 2 * mf ** 2,
-            ]
-        ).T
-
-        # Iteratively fit
-        k = np.isfinite(f_temp_mask)
-        for count in [0, 1, 2]:
-            sigma_w_inv = A[k].T.dot(A[k])
-            B = A[k].T.dot(f_temp_mask[k])
-            w = np.linalg.solve(sigma_w_inv, B)
-            res = np.ma.masked_array(f_temp_mask, ~k) - A.dot(w)
-            k &= ~sigma_clip(res, sigma=3).mask
-
-        # Now find the radius and source flux at which the model reaches the flux limit
-        test_f = np.linspace(
-            np.log10(self.source_flux_estimates.min()),
-            np.log10(self.source_flux_estimates.max()),
-            100,
-        )
-        test_r = np.arange(lower_radius_limit, upper_radius_limit, 0.25)
-        test_r2, test_f2 = np.meshgrid(test_r, test_f)
-
-        test_val = (
-            np.vstack(
+            rbins = np.linspace(0, self.r.data.max(), 100)
+            masks = np.asarray(
                 [
-                    test_r2.ravel() ** 0,
-                    test_r2.ravel(),
-                    # test_r2.ravel() ** 2,
-                    test_r2.ravel() ** 0 * test_f2.ravel(),
-                    test_r2.ravel() * test_f2.ravel(),
-                    # test_r2.ravel() ** 2 * test_f2.ravel(),
-                    # test_r2.ravel() ** 0 * test_f2.ravel() ** 2,
-                    # test_r2.ravel() * test_f2.ravel() ** 2,
-                    # test_r2.ravel() ** 2 * test_f2.ravel() ** 2,
+                    (r > rbins[idx]) & (r <= rbins[idx + 1])
+                    for idx in range(len(rbins) - 1)
                 ]
             )
-            .T.dot(w)
-            .reshape(test_r2.shape)
-        )
-        l = np.zeros(len(test_f)) * np.nan
-        for idx in range(len(test_f)):
-            loc = np.where(10 ** test_val[idx] < lower_flux_limit)[0]
-            if len(loc) > 0:
-                l[idx] = test_r[loc[0]]
-        ok = np.isfinite(l)
-        source_radius_limit = np.polyval(
-            np.polyfit(test_f[ok], l[ok], 1), np.log10(self.source_flux_estimates)
-        )
-        source_radius_limit[
-            source_radius_limit > upper_radius_limit
-        ] = upper_radius_limit
-        source_radius_limit[
-            source_radius_limit < lower_radius_limit
-        ] = lower_radius_limit
+            fbins = np.asarray([np.nanpercentile(max_f[m], 25) for m in masks])
+            rbins = rbins[1:] - np.median(np.diff(rbins))
+            k = np.isfinite(fbins)
+            if not k.any():
+                raise ValueError("Can not find source mask")
+            l = np.polyfit(rbins[k], fbins[k], 3)
 
-        # Here we set the radius for each source. We add two pixels, to be generous
-        self.radius = source_radius_limit + 0.2
+            
 
-        # This sparse mask is one where where is ANY number of sources in a pixel
-        if not isinstance(self.r, sparse.csr_matrix):
-            self.source_mask = sparse.csr_matrix(self.r.value < self.radius[:, None])
-        else:
-            # for a sparse matrix doing < self.radius is not efficient, it
-            # considers all zero values in the sparse matrix and set them to True.
-            # this is a workaround to this problem.
-            self.source_mask = sparse_lessthan(r, self.radius)
-
-        self._get_uncontaminated_pixel_mask()
-
-        # Now we can update the r and phi estimates, allowing for a slight centroid
-        # calculate image centroids and correct dra,ddec for offset.
-        if correct_centroid_offset:
-            self._get_centroids()
-            # print(self.ra_centroid_avg.to("arcsec"), self.dec_centroid_avg.to("arcsec"))
-            # re-estimate dra, ddec with centroid shifts, check if sparse case applies.
-            # Hardcoded: sparse implementation is efficient when nsourxes * npixels < 1e7
-            # (JMP profile this)
-            # https://github.com/SSDataLab/psfmachine/pull/17#issuecomment-866382898
-            if self.nsources * self.npixels < 1e7:
-                self._create_delta_arrays(
-                    centroid_offset=[
-                        self.ra_centroid_avg.value,
-                        self.dec_centroid_avg.value,
-                    ]
-                )
+            if sparse.issparse(self.r):
+                mean_model = self.r.copy()
+                mean_model.data = 10 ** np.polyval(l, mean_model.data)
+                self.source_mask = (
+                    mean_model.multiply(self.source_flux_estimates[:, None])
+                ) > source_flux_limit
             else:
-                self._create_delta_sparse_arrays(
-                    centroid_offset=[
-                        self.ra_centroid_avg.value,
-                        self.dec_centroid_avg.value,
-                    ]
+                mean_model = 10 ** np.polyval(l, self.r)
+                self.source_mask = (
+                    sparse.csr_matrix(mean_model * self.source_flux_estimates[:, None])
+                    > source_flux_limit
                 )
-            # if centroid offset id larger than 1" then we need to recalculate the
-            # source mask to include/reject correct pixels.
-            # this 1 arcsec limit only works for Kepler/K2
-            if (
-                np.abs(self.ra_centroid_avg.to("arcsec").value) > 1
-                or np.abs(self.dec_centroid_avg.to("arcsec").value) > 1
-            ):
-                self._get_source_mask(correct_centroid_offset=False)
+            self.uncontaminated_source_mask = _find_uncontaminated_pixels(
+                self.source_mask
+            )
 
+            # plt.scatter(self.r.data, mean_model.multiply(self.source_flux_estimates[:, None]).data, s=1, alpha=0.6)
+            # plt.axhline(source_flux_limit, c="tab:red", zorder=50000)
+            # plt.yscale("log")
+            # plt.xlim(-0.1, 1.2)
+            # plt.ylim(0.001, 1e3)
+            # plt.show()
+
+            # plt.scatter(r, 10 ** max_f, s=2, alpha=0.5)
+            # plt.scatter(self.r.data, mean_model.data, s=2)
+            # plt.xlim(rbins[k].min() - 0.04, rbins[k].max() + 0.04)
+            # plt.ylim(-0.05, 1.5)
+            # plt.xlabel("r")
+            # plt.ylabel("flux")
+            # plt.show()
+
+        self.radius = self.source_mask.multiply(self.r).max(axis=1).toarray().ravel()
+        self.radius[self.radius < self.pixel_scale.value] = self.pixel_scale.value * 1.25
+        self.source_mask = sparse_lessthan(self.r, self.radius)
+        self.uncontaminated_source_mask = _find_uncontaminated_pixels(self.source_mask)
+            
         if plot:
-            k = np.isfinite(f_temp_mask)
-            # Make a nice diagnostic plot
-            fig, ax = plt.subplots(1, 2, figsize=(11, 3), facecolor="white")
-
-            ax[0].scatter(r_temp_mask[k], f_temp_mask[k], s=0.4, c="k", label="Data")
-            ax[0].scatter(r_temp_mask[k], A[k].dot(w), c="r", s=0.4, label="Model")
-            ax[0].set(
-                xlabel=("Radius from Source [arcsec]"),
-                ylabel=("log$_{10}$ Kepler Flux"),
-            )
-            ax[0].legend(frameon=True)
-
-            im = ax[1].pcolormesh(
-                test_f2,
-                test_r2,
-                10 ** test_val,
-                vmin=0,
-                vmax=lower_flux_limit * 2,
-                cmap="viridis",
-                shading="auto",
-            )
-            line = np.polyval(np.polyfit(test_f[ok], l[ok], 1), test_f)
-            line[line > upper_radius_limit] = upper_radius_limit
-            line[line < lower_radius_limit] = lower_radius_limit
-            ax[1].plot(test_f, line, color="r", label="Best Fit PSF Edge")
-            ax[1].set_ylim(lower_radius_limit, upper_radius_limit)
-            ax[1].legend(frameon=True)
-
-            cbar = plt.colorbar(im, ax=ax)
-            cbar.set_label("PSF Flux [$e^-s^{-1}$]")
-
-            ax[1].set(
-                ylabel=("Radius from Source [arcsecond]"),
-                xlabel=("log$_{10}$ Gaia Source Flux"),
-            )
-            return fig
+            plt.plot(rbins[k], fbins[k], label="data")
+            plt.plot(rbins[k], np.polyval(l, rbins[k]), label="polynomial")
+            plt.title("Binned Flux Source Proflle")
+            plt.legend()
+            plt.xlabel("r [arcsec]")
+            plt.ylabel("Normalized Log Flux")
+            plt.show()
         return
 
     def _get_uncontaminated_pixel_mask(self):

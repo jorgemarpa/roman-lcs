@@ -669,3 +669,14 @@ def bspline_smooth(
         )
         y_smooth.append(DM.dot(weights))
     return np.array(y_smooth)
+
+
+def _find_uncontaminated_pixels(mask):
+    """
+    creates a mask of shape nsources x npixels where targets are not contaminated.
+    This mask is used to select pixels to build the PSF model.
+    """
+
+    new_mask = mask.multiply(np.asarray(mask.sum(axis=0) == 1)[0]).tocsr()
+    new_mask.eliminate_zeros()
+    return new_mask
