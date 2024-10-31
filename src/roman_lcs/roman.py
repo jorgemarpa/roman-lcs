@@ -38,14 +38,14 @@ class RomanMachine(Machine):
         cadenceno=None,
         wcs=None,
         limit_radius=32.0,
-        n_r_knots=10,
+        n_r_knots=9,
         n_phi_knots=15,
         time_nknots=10,
         time_resolution=200,
         time_radius=8,
-        cut_r=6,
-        rmin=1,
-        rmax=16,
+        cut_r=0.15,
+        rmin=0.02,
+        rmax=0.8,
         sparse_dist_lim=40,
         quality_mask=None,
         sources_flux_column="flux",
@@ -346,7 +346,7 @@ class RomanMachine(Machine):
     def _pointing_offset(self):
         self.ra_offset = (self.ra_3d - self.ra_3d[0]).mean(axis=1)
         self.dec_offset = (self.dec_3d - self.dec_3d[0]).mean(axis=1)
-    
+
     def _get_source_mask(
         self,
         upper_radius_limit=2.0,
@@ -370,6 +370,39 @@ class RomanMachine(Machine):
         )
         self._remove_bad_pixels_from_source_mask()
 
+    def _remove_bad_pixels_from_source_mask(self):
+        """
+        Combines source_mask and uncontaminated_pixel_mask with saturated and bright
+        pixel mask.
+        """
+        self.source_mask = self.source_mask.multiply(self.pixel_mask).tocsr()
+        self.source_mask.eliminate_zeros()
+        self.uncontaminated_source_mask = self.uncontaminated_source_mask.multiply(
+            self.pixel_mask
+        ).tocsr()
+        self.uncontaminated_source_mask.eliminate_zeros()
+
+
+    def build_shape_model(
+        self, plot=False, flux_cut_off=1, frame_index="mean", bin_data=False, **kwargs
+    ):
+        """
+        Adapted version of `machine.build_shape_model()` that masks out saturated and
+        bright halo pixels in FFIs. See parameter descriptions in `Machine`.
+        """
+        # call method from super calss `machine`
+        super().build_shape_model(
+            plot=False,
+            flux_cut_off=flux_cut_off,
+            frame_index=frame_index,
+            bin_data=bin_data,
+            **kwargs,
+        )
+        # include sat/halo pixels again into source_mask
+        self._remove_bad_pixels_from_source_mask()
+        if plot:
+            return self.plot_shape_model(frame_index=frame_index, bin_data=bin_data)
+
     def save_shape_model(self, output=None):
         """
         Saves the weights of a PRF fit to disk.
@@ -381,36 +414,31 @@ class RomanMachine(Machine):
         """
         # asign a file name
         if output is None:
-            output = "./%s_ffi_shape_model_ext%s_q%s.fits" % (
-                self.meta["MISSION"],
-                str(self.meta["EXTENSION"]),
-                str(self.meta["QUARTER"]),
-            )
-            log.info(f"File name: {output}")
+            output = f"./{self.meta['MISSION']}_shape_model_{self.meta['FILTER']}_{self.meta['DETECTOR']}.fits"
 
         # create data structure (DataFrame) to save the model params
         table = fits.BinTableHDU.from_columns(
             [
                 fits.Column(
                     name="psf_w",
-                    array=self.psf_w / np.log10(self.mean_model_integral),
+                    array=self.psf_w,
                     format="D",
                 )
             ]
         )
         # include metadata and descriptions
-        table.header["object"] = ("PRF shape", "PRF shape parameters")
-        table.header["datatype"] = ("FFI", "Type of data used to fit shape model")
-        table.header["origin"] = ("PSFmachine.RomanMachine", "Software of origin")
-        table.header["version"] = (__version__, "Software version")
+        table.header["OBJECT"] = ("PRF shape", "PRF shape parameters")
+        table.header["DATATYPE"] = ("SimImage", "Type of data used to fit shape model")
+        table.header["ORIGIN"] = ("PSFmachine.RomanMachine", "Software of origin")
+        table.header["VERSION"] = (__version__, "Software version")
         table.header["TELESCOP"] = (self.meta["TELESCOP"], "Telescope name")
-        table.header["mission"] = (self.meta["MISSION"], "Mission name")
-        table.header["quarter"] = (
-            self.meta["QUARTER"],
-            "Quarter/Campaign/Sector of observations",
-        )
-        table.header["channel"] = (self.meta["EXTENSION"], "Channel/Camera-CCD output")
-        table.header["MJD-OBS"] = (self.time[0], "MJD of observation")
+        table.header["MISSION"] = (self.meta["MISSION"], "Mission name")
+
+        table.header["FIELD"] = (self.meta["FIELD"], "Field")
+        table.header["DETECTOR"] = (self.meta["DETECTOR"], "Instrument detector")
+        table.header["FILTER"] = (self.meta["FILTER"], "Instrument filter")
+
+        table.header["JD-OBS"] = (self.time[0], "JD of observation")
         table.header["n_rknots"] = (
             self.n_r_knots,
             "Number of knots for spline basis in radial axis",
@@ -466,23 +494,22 @@ class RomanMachine(Machine):
         # create source mask and uncontaminated pixel mask
         # if not hasattr(self, "source_mask"):
         self._get_source_mask(
-            upper_radius_limit=1.8,
+            upper_radius_limit=2.0,
             lower_radius_limit=0.01,
-            upper_flux_limit=5e5,
-            lower_flux_limit=100,
+            upper_flux_limit=1e5,
+            lower_flux_limit=50,
             correct_centroid_offset=False,
         )
 
         # open file
         hdu = fits.open(input)
         # check if shape parameters are for correct mission, quarter, and channel
-        if hdu[1].header["mission"] != "Roman-Sim":
-            raise ValueError("Wrong shape model: file is for mission Roman-Sim")
-        print(hdu[1].header["field"])
-        if int(hdu[1].header["field"]) != 1:
+        if hdu[1].header["MISSION"] != self.meta["MISSION"]:
+            raise ValueError("Wrong shape model: file is for mission Roman")
+        if int(hdu[1].header["FIELD"]) != self.meta["FIELD"]:
             raise ValueError("Wrong field")
-        if int(hdu[1].header["SCA"]) != 7:
-            raise ValueError("Wrong SCA")
+        if int(hdu[1].header["DETECTOR"]) != self.meta["DETECTOR"]:
+            raise ValueError("Wrong DETECTOR")
 
         # load model hyperparameters and weights
         self.n_r_knots = hdu[1].header["n_rknots"]
@@ -506,38 +533,6 @@ class RomanMachine(Machine):
         if plot:
             return self.plot_shape_model()
         return
-
-    def _remove_bad_pixels_from_source_mask(self):
-        """
-        Combines source_mask and uncontaminated_pixel_mask with saturated and bright
-        pixel mask.
-        """
-        self.source_mask = self.source_mask.multiply(self.pixel_mask).tocsr()
-        self.source_mask.eliminate_zeros()
-        self.uncontaminated_source_mask = self.uncontaminated_source_mask.multiply(
-            self.pixel_mask
-        ).tocsr()
-        self.uncontaminated_source_mask.eliminate_zeros()
-
-    def build_shape_model(
-        self, plot=False, flux_cut_off=1, frame_index="mean", bin_data=False, **kwargs
-    ):
-        """
-        Adapted version of `machine.build_shape_model()` that masks out saturated and
-        bright halo pixels in FFIs. See parameter descriptions in `Machine`.
-        """
-        # call method from super calss `machine`
-        super().build_shape_model(
-            plot=False,
-            flux_cut_off=flux_cut_off,
-            frame_index=frame_index,
-            bin_data=bin_data,
-            **kwargs,
-        )
-        # include sat/halo pixels again into source_mask
-        self._remove_bad_pixels_from_source_mask()
-        if plot:
-            return self.plot_shape_model(frame_index=frame_index, bin_data=bin_data)
 
     def residuals(self, plot=False, zoom=False, metric="residuals"):
         """
@@ -679,8 +674,8 @@ class RomanMachine(Machine):
             Matlotlib axis with the figure.
         """
         if ax is None:
-            plt.figure(figsize=(10,10))
-            ax = plt.subplot(projection=self.WCSs[frame_index], label='overlays')
+            plt.figure(figsize=(10, 10))
+            ax = plt.subplot(projection=self.WCSs[frame_index], label="overlays")
 
         norm = simple_norm(self.flux[frame_index].ravel(), "asinh", percent=95)
 
@@ -704,7 +699,9 @@ class RomanMachine(Machine):
         )
 
         pix_coord = (
-            self.WCSs[frame_index].all_world2pix(self.sources.loc[:, ["ra", "dec"]].values, 0.0).T
+            self.WCSs[frame_index]
+            .all_world2pix(self.sources.loc[:, ["ra", "dec"]].values, 0.0)
+            .T
         )
 
         if sources:
@@ -856,6 +853,7 @@ def _load_file(fname, extension=0):
         "RADESYS": aux.read_header()["RADESYS"],
         "EQUINOX": aux.read_header()["EQUINOX"],
         "FILTER": aux.read_header()["FILTER"],
+        "FIELD": 1,
         "DETECTOR": aux.read_header()["DETECTOR"],
         "EXPOSURE": aux.read_header()["EXPOSURE"],
         "READMODE": aux.read_header()["READMODE"],
