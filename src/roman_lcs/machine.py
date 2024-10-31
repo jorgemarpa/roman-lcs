@@ -19,9 +19,7 @@ from .utils import (
     bspline_smooth,
 )
 from .perturbation import PerturbationMatrix3D
-
-log = logging.getLogger(__name__)
-__all__ = ["Machine"]
+from . import __version__
 
 
 class Machine(object):
@@ -178,6 +176,13 @@ class Machine(object):
         self.quiet = False
         self.contaminant_mag_limit = None
 
+        self.pixel_scale = (
+            np.hypot(
+                np.min(np.abs(np.diff(self.ra))), np.min(np.abs(np.diff(self.dec)))
+            )
+            * u.deg
+        ).to(u.arcsecond)
+
         self.source_flux_estimates = np.copy(self.sources[sources_flux_column].values)
 
         if time_mask is None:
@@ -188,6 +193,8 @@ class Machine(object):
         self.nsources = len(self.sources)
         self.nt = len(self.time)
         self.npixels = self.flux.shape[1]
+
+        self.ra_centroid, self.dec_centroid = np.zeros((2)) * u.deg
 
         # Hardcoded: sparse implementation is efficient when nsourxes * npixels < 1e7
         # (JMP profile this)
@@ -331,7 +338,7 @@ class Machine(object):
         lower_radius_limit=4.5,
         upper_flux_limit=2e5,
         lower_flux_limit=100,
-        correct_centroid_offset=True,
+        correct_centroid_offset=False,
         plot=False,
     ):
         """Find the pixel mask that identifies pixels with contributions from ANY
@@ -359,6 +366,9 @@ class Machine(object):
         plot: bool
             Whether to show diagnostic plot. Default is False
         """
+
+        
+
         # We will use the radius a lot, this is for readibility
         # don't do if sparse array
         if isinstance(self.r, u.quantity.Quantity):
@@ -366,7 +376,7 @@ class Machine(object):
         else:
             r = self.r
 
-        # The average flux, which we assume is a good estimate of the whole stack of images
+        # The max flux, to assume is a generous estimate of the whole stack of images
         max_flux = np.nanmax(self.flux[self.time_mask], axis=0)
 
         # Mask out sources that are above the flux limit, and pixels above the
@@ -1066,6 +1076,7 @@ class Machine(object):
             errors=True,
         )
 
+        self.clean_pixel_mask = nan_mask & ~bad
         self.psf_w = psf_w
         self.psf_w_err = psf_w_err
         self.normalized_shape_model = False
@@ -1402,7 +1413,7 @@ class Machine(object):
         dy = dy.data * u.deg.to(u.arcsecond)
 
         radius = np.maximum(np.abs(dx).max(), np.abs(dy).max()) * 1.1
-        vmin, vmax = np.nanpercentile(mean_f, [5, 90])
+        vmin, vmax = np.nanpercentile(mean_f, [10, 93])
 
         if bin_data:
             nbins = 30 if mean_f.shape[0] <= 5e3 else 90
@@ -1410,7 +1421,7 @@ class Machine(object):
                 dx, dy, mean_f, bins=nbins, abs_thresh=5
             )
 
-        fig, ax = plt.subplots(3, 2, figsize=(9, 10.5), constrained_layout=True)
+        fig, ax = plt.subplots(2, 2, figsize=(9, 7), constrained_layout=True)
         im = ax[0, 0].scatter(
             dx,
             dy,
@@ -1507,27 +1518,27 @@ class Machine(object):
         mean_f = 10 ** mean_f
         model = 10 ** model
 
-        im = ax[2, 0].scatter(
-            dx,
-            dy,
-            c=(model - mean_f) / mean_f,
-            cmap="RdBu",
-            vmin=-1,
-            vmax=1,
-            s=3,
-            rasterized=True,
-        )
-        ax[2, 1].scatter(
-            phi,
-            r,
-            c=(model - mean_f) / mean_f,
-            cmap="RdBu",
-            vmin=-1,
-            vmax=1,
-            s=3,
-            rasterized=True,
-        )
-        ax[2, 0].set_aspect("equal", adjustable="box")
+        # im = ax[2, 0].scatter(
+        #     dx,
+        #     dy,
+        #     c=(model - mean_f) / mean_f,
+        #     cmap="RdBu",
+        #     vmin=-1,
+        #     vmax=1,
+        #     s=3,
+        #     rasterized=True,
+        # )
+        # ax[2, 1].scatter(
+        #     phi,
+        #     r,
+        #     c=(model - mean_f) / mean_f,
+        #     cmap="RdBu",
+        #     vmin=-1,
+        #     vmax=1,
+        #     s=3,
+        #     rasterized=True,
+        # )
+        # ax[2, 0].set_aspect("equal", adjustable="box")
         ax[-1, 0].set(
             xlabel=r'$\delta x$ ["]',
             ylabel=r'$\delta y$ ["]',
@@ -1542,8 +1553,8 @@ class Machine(object):
             ylim=(0, radius),
             yticks=np.linspace(0, radius, 5, dtype=int),
         )
-        cbar = fig.colorbar(im, ax=ax[2, 1], shrink=0.9, location="right")
-        cbar.set_label("(F$_M$ - F$_D$)/F$_D$")
+        # cbar = fig.colorbar(im, ax=ax[2, 1], shrink=0.9, location="right")
+        # cbar.set_label("(F$_M$ - F$_D$)/F$_D$")
 
         return fig
 
@@ -1620,99 +1631,5 @@ class Machine(object):
         if fit_va:
             self.ws_va[:, nodata] *= np.nan
             self.werrs_va[:, nodata] *= np.nan
-
-        return
-
-    # aperture photometry functions
-    def create_aperture_mask(self, percentile=50):
-        """
-        Function to create the aperture mask of a given source for a given aperture
-        size. This function can compute aperutre mask for all sources in the scene.
-
-        It creates three new attributes:
-            * `self.aperture_mask` has the aperture mask, shape is [n_surces, n_pixels]
-            * `self.FLFRCSAP` has the completeness metric, shape is [n_sources]
-            * `self.CROWDSAP` has the crowdeness metric, shape is [n_sources]
-
-        Parameters
-        ----------
-        percentile : float or list of floats
-            Percentile value that defines the isophote from the distribution
-            of values in the PRF model of the source. If float, then
-            all sources will use the same percentile value. If list, then it has to
-            have lenght that matches `self.nsources`, then each source has its own
-            percentile value.
-
-        """
-        if type(percentile) == int:
-            percentile = [percentile] * self.nsources
-        if len(percentile) != self.nsources:
-            raise ValueError("Lenght of percentile doesn't match number of sources.")
-        # compute isophot limit allowing for different source percentile
-        cut = np.array(
-            [
-                np.nanpercentile(obj.data, per)
-                for obj, per in zip(self.mean_model, percentile)
-            ]
-        )
-        # create aperture mask
-        self.aperture_mask = np.array(self.mean_model >= cut[::, None])
-        # make sure there are no all-pixel apertures due to `mean_model[i] = 0`
-        self.aperture_mask[self.aperture_mask.sum(axis=1) == self.npixels] = False
-        # compute flux metrics. Have to round to 10th decimal due to floating point
-        self.FLFRCSAP = np.round(
-            compute_FLFRCSAP(self.mean_model, self.aperture_mask), 10
-        )
-        self.CROWDSAP = np.round(
-            compute_CROWDSAP(self.mean_model, self.aperture_mask), 10
-        )
-
-    def compute_aperture_photometry(
-        self, aperture_size="optimal", target_complete=0.9, target_crowd=0.9
-    ):
-        """
-        Computes aperture photometry for all sources in the scene. The aperture shape
-        follow the PRF profile.
-
-        Parameters
-        ----------
-        aperture_size : string or int
-            Size of the aperture to be used. If "optimal" the aperture will be optimized
-            using the flux metric targets. If int between [0, 100], then the boundaries
-            of the aperture are calculated from the normalized flux value of the given
-            ith percentile.
-        target_complete : float
-            Target flux completeness metric (FLFRCSAP) used if aperture_size is
-             "optimal".
-        target_crowd : float
-            Target flux crowding metric (CROWDSAP) used if aperture_size is "optimal".
-        """
-        if aperture_size == "optimal":
-            # raise NotImplementedError
-            optimal_percentile = optimize_aperture(
-                self.mean_model,
-                target_complete=target_complete,
-                target_crowd=target_crowd,
-                quiet=self.quiet,
-            )
-            self.create_aperture_mask(percentile=optimal_percentile)
-            self.optimal_percentile = optimal_percentile
-        else:
-            self.create_aperture_mask(percentile=aperture_size)
-
-        self.sap_flux = np.zeros((self.flux.shape[0], self.nsources))
-        self.sap_flux_err = np.zeros((self.flux.shape[0], self.nsources))
-
-        for sdx in tqdm(
-            range(len(self.aperture_mask)),
-            desc="SAP",
-            leave=True,
-            disable=self.quiet,
-        ):
-            self.sap_flux[:, sdx] = self.flux[:, self.aperture_mask[sdx]].sum(axis=1)
-            self.sap_flux_err[:, sdx] = (
-                np.power(self.flux_err[:, self.aperture_mask[sdx]], 2).sum(axis=1)
-                ** 0.5
-            )
 
         return
