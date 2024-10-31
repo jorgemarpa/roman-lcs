@@ -1,6 +1,7 @@
 .python-version
 site
 dist
+notebooks
 notebooks/.ipynb_checkpoints
 .ruff_cache
 src/roman_lcs/__pycache__
