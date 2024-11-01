@@ -197,13 +197,7 @@ class Machine(object):
 
         self.ra_centroid, self.dec_centroid = np.zeros((2)) * u.deg
 
-        # Hardcoded: sparse implementation is efficient when nsourxes * npixels < 1e7
-        # (JMP profile this)
-        # https://github.com/SSDataLab/psfmachine/pull/17#issuecomment-866382898
-        if self.nsources * self.npixels < 1e7:
-            self._create_delta_arrays()
-        else:
-            self._create_delta_sparse_arrays()
+        self._update_delta_arrays(frame_index=0)
 
     @property
     def shape(self):
@@ -211,43 +205,54 @@ class Machine(object):
 
     def __repr__(self):
         return f"Machine (N sources, N times, N pixels): {self.shape}"
+    
+    def _update_delta_arrays(self, frame_index=0):
+        """
+        Wrapper method to update dra, ddec, r and phi.
 
-    def _create_delta_arrays(self, centroid_offset=[0, 0]):
+        Parameters
+        ----------
+        rame_index : list or str
+            Framce index used for ra and dec coordinate grid
+        """
+        # Hardcoded: sparse implementation is efficient when nsourxes * npixels < 1e7
+        # (JMP profile this)
+        # https://github.com/SSDataLab/psfmachine/pull/17#issuecomment-866382898
+        if self.nsources * self.npixels < 1e7:
+            self._update_delta_numpy_arrays(frame_index=frame_index)
+        else:
+            self._update_delta_sparse_arrays(frame_index=frame_index)
+
+    def _updated_delta_arrays(self, frame_index=0):
         """
         Creates dra, ddec, r and phi numpy ndarrays .
 
         Parameters
         ----------
-        centroid_offset : list
-            Centroid offset for [ra, dec] to be included in dra and ddec computation.
-            Default is [0, 0].
+        rame_index : list or str
+            Framce index used for ra and dec coordinate grid
         """
         # The distance in ra & dec from each source to each pixel
         # when centroid offset is 0 (i.e. first time creating arrays) create delta
         # arrays from scratch
-        if centroid_offset[0] == centroid_offset[1] == 0:
-            self.dra, self.ddec = np.asarray(
+
+        self.dra, self.ddec = np.asarray(
+            [
                 [
-                    [
-                        self.ra - self.sources["ra"][idx] - centroid_offset[0],
-                        self.dec - self.sources["dec"][idx] - centroid_offset[1],
-                    ]
-                    for idx in range(len(self.sources))
+                    self.ra[frame_index] - self.sources["ra"][idx],
+                    self.dec[frame_index] - self.sources["dec"][idx],
                 ]
-            ).transpose(1, 0, 2)
-            self.dra = self.dra * (u.deg)
-            self.ddec = self.ddec * (u.deg)
-        # when offsets are != 0 (i.e. updating dra and ddec arrays) we just substract
-        # the ofsets avoiding the for loop
-        else:
-            self.dra -= centroid_offset[0] * u.deg
-            self.ddec -= centroid_offset[1] * u.deg
+                for idx in range(len(self.sources))
+            ]
+        ).transpose(1, 0, 2)
+        self.dra = self.dra * (u.deg)
+        self.ddec = self.ddec * (u.deg)
 
         # convertion to polar coordinates
         self.r = np.hypot(self.dra, self.ddec).to("arcsec")
         self.phi = np.arctan2(self.ddec, self.dra)
 
-    def _create_delta_sparse_arrays(self, centroid_offset=[0, 0]):
+    def _update_delta_sparse_arrays(self, frame_index=0):
         """
         Creates dra, ddec, r and phi arrays as sparse arrays to be used for dense data,
         e.g. Kepler FFIs or cluster fields. Assuming that there is no flux information
@@ -259,59 +264,33 @@ class Machine(object):
 
         Parameters
         ----------
-        centroid_offset : list
-            Centroid offset for [ra, dec] to be included in dra and ddec computation.
-            Default is [0, 0].
+        rame_index : list or str
+            Framce index used for ra and dec coordinate grid
         """
-        # If not centroid offsets or  centroid correction are larget than a pixel,
-        # then we need to compute the sparse delta arrays from scratch
-        if (centroid_offset[0] == centroid_offset[1] == 0) or (
-            np.maximum(*np.abs(centroid_offset)) > 4 / 3600
+        # iterate over sources to only keep pixels within self.sparse_dist_lim
+        # this is inefficient, could be done in a tiled manner? only for squared data
+        dra, ddec, sparse_mask = [], [], []
+        for i in tqdm(
+            range(len(self.sources)),
+            desc="Creating delta arrays",
+            disable=self.quiet,
         ):
-            # iterate over sources to only keep pixels within self.sparse_dist_lim
-            # this is inefficient, could be done in a tiled manner? only for squared data
-            dra, ddec, sparse_mask = [], [], []
-            for i in tqdm(
-                range(len(self.sources)),
-                desc="Creating delta arrays",
-                disable=self.quiet,
-            ):
-                dra_aux = self.ra - self.sources["ra"].iloc[i] - centroid_offset[0]
-                ddec_aux = self.dec - self.sources["dec"].iloc[i] - centroid_offset[1]
-                box_mask = sparse.csr_matrix(
-                    (np.abs(dra_aux) <= self.sparse_dist_lim.to("deg").value)
-                    & (np.abs(ddec_aux) <= self.sparse_dist_lim.to("deg").value)
-                )
-                dra.append(box_mask.multiply(dra_aux))
-                ddec.append(box_mask.multiply(ddec_aux))
-                sparse_mask.append(box_mask)
+            dra_aux = self.ra[frame_index] - self.sources["ra"].iloc[i]
+            ddec_aux = self.dec[frame_index] - self.sources["dec"].iloc[i]
+            box_mask = sparse.csr_matrix(
+                (np.abs(dra_aux) <= self.sparse_dist_lim.to("deg").value)
+                & (np.abs(ddec_aux) <= self.sparse_dist_lim.to("deg").value)
+            )
+            dra.append(box_mask.multiply(dra_aux))
+            ddec.append(box_mask.multiply(ddec_aux))
+            sparse_mask.append(box_mask)
 
-            del dra_aux, ddec_aux, box_mask
-            # we stack dra, ddec of each object to create a [nsources, npixels] matrices
-            self.dra = sparse.vstack(dra, "csr")
-            self.ddec = sparse.vstack(ddec, "csr")
-            sparse_mask = sparse.vstack(sparse_mask, "csr")
-            sparse_mask.eliminate_zeros()
-        # if centroid correction is less than 1 pixel, then we just update dra and ddec
-        # sparse arrays arrays and r and phi.
-        else:
-            self.dra = self.dra - sparse.csr_matrix(
-                (
-                    np.repeat(centroid_offset[0], self.dra.data.shape),
-                    (self.dra.nonzero()),
-                ),
-                shape=self.dra.shape,
-                dtype=float,
-            )
-            self.ddec = self.ddec - sparse.csr_matrix(
-                (
-                    np.repeat(centroid_offset[1], self.ddec.data.shape),
-                    (self.ddec.nonzero()),
-                ),
-                shape=self.ddec.shape,
-                dtype=float,
-            )
-            sparse_mask = self.dra.astype(bool)
+        del dra_aux, ddec_aux, box_mask
+        # we stack dra, ddec of each object to create a [nsources, npixels] matrices
+        self.dra = sparse.vstack(dra, "csr")
+        self.ddec = sparse.vstack(ddec, "csr")
+        sparse_mask = sparse.vstack(sparse_mask, "csr")
+        sparse_mask.eliminate_zeros()
 
         # convertion to polar coordinates. We can't apply np.hypot or np.arctan2 to
         # sparse arrays. We keep track of non-zero index, do math in numpy space,
@@ -333,8 +312,11 @@ class Machine(object):
         del r_vals, phi_vals, nnz_inds, sparse_mask
         return
 
-    def _get_source_mask(self, source_flux_limit=1, iterations=2, plot=False):
-        """Find the round pixel mask that identifies pixels with contributions from ANY of source
+    def _get_source_mask(self, source_flux_limit=1, iterations=2, plot=False, reference_frame=0):
+        """
+        Find the round pixel mask that identifies pixels with contributions from ANY of source.
+        The source mask is created from one frame, then with `self.radius` it can be updated
+        to other frames with different coordinate grids using `self._update_source_mask()`
 
         Firstly, makes a `rough_mask` that is 1 arcsec in radius. Then fits a simple
         linear trend in radius and flux. Uses this linear trend to identify pixels
@@ -347,7 +329,13 @@ class Machine(object):
         ----------
         source_flux_limit: float
             Lower limit at which the source flux meets the background level
+        iterations: int
+            Number of iterations to fit polynomial
+        plot: boolean
+            Make a diagnostic plot
         """
+        # make sure delta arrays are from the reference frame.
+        self._update_delta_arrays(frame_index=reference_frame)
         self.radius = 5 * self.pixel_scale.to(u.arcsecond).value
         if not sparse.issparse(self.r):
             self.rough_mask = sparse.csr_matrix(self.r < self.radius)
@@ -356,14 +344,13 @@ class Machine(object):
         self.source_mask = self.rough_mask.copy()
         self.source_mask.eliminate_zeros()
         self.uncontaminated_source_mask = _find_uncontaminated_pixels(self.source_mask)
-        for count in range(iterations):
-            # self._get_centroid()
-            # self._update_delta_arrays()
+
+        for _ in range(iterations):
             mask = self.uncontaminated_source_mask
             r = mask.multiply(self.r).data
             max_f = np.log10(
                 mask.astype(float)
-                .multiply(np.nanmax(self.flux[self.time_mask], axis=0))
+                .multiply(self.flux[reference_frame])
                 .multiply(1 / self.source_flux_estimates[:, None])
                 .data
             )
@@ -417,8 +404,8 @@ class Machine(object):
         self.radius = self.source_mask.multiply(self.r).max(axis=1).toarray().ravel()
         self.radius[self.radius < self.pixel_scale.value] = self.pixel_scale.value * 1.25
         self.source_mask = sparse_lessthan(self.r, self.radius)
-        self.uncontaminated_source_mask = _find_uncontaminated_pixels(self.source_mask)
-            
+        self._get_uncontaminated_pixel_mask()
+
         if plot:
             plt.plot(rbins[k], fbins[k], label="data")
             plt.plot(rbins[k], np.polyval(l, rbins[k]), label="polynomial")
@@ -427,6 +414,28 @@ class Machine(object):
             plt.xlabel("r [arcsec]")
             plt.ylabel("Normalized Log Flux")
             plt.show()
+        return
+    
+    def _update_source_mask(self, frame_index=0, source_flux_limit=1):
+        """
+        Update source mask using self.radius when the ra,dec coordinate grid changes
+
+        Parameters
+        ----------
+        rame_index : list or str
+            Framce index used for ra and dec coordinate grid
+        """
+        # check if surce radius exist, if not, we run source_mask first
+        if not hasattr(self, "radius"):
+            self._get_source_mask(source_flux_limit=source_flux_limit, reference_frame=0)
+        
+        # update delta arrays to use the asked frame
+        self._update_delta_arrays(frame_index=frame_index)
+
+        # update the source mask and uncontaminated pixels
+        self.source_mask = sparse_lessthan(self.r, self.radius)
+        self._get_uncontaminated_pixel_mask()
+
         return
 
     def _get_uncontaminated_pixel_mask(self):

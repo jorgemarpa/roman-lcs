@@ -281,10 +281,10 @@ class RomanMachine(Machine):
         )
         self.pixel_mask = self.non_sat_pixel_mask & self.non_bright_source_mask
 
-        if not hasattr(self, "source_mask"):
-            self._get_source_mask()
-            # include saturated pixels in the source mask and uncontaminated mask
-            self._remove_bad_pixels_from_source_mask()
+        # if not hasattr(self, "source_mask"):
+        #     self._get_source_mask()
+        #     # include saturated pixels in the source mask and uncontaminated mask
+        #     self._remove_bad_pixels_from_source_mask()
 
         return
 
