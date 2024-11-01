@@ -1,26 +1,29 @@
 """
 Defines the main Machine object that fit a mean PRF model to sources
 """
-import logging
-import numpy as np
-import pandas as pd
-from scipy import sparse
-from scipy import stats
-import astropy.units as u
-from tqdm import tqdm
-import matplotlib.pyplot as plt
-from astropy.stats import sigma_clip
 
+import logging
+from typing import Optional, Union
+
+import astropy.units as u
+import matplotlib.pyplot as plt
+import numpy as np
+import numpy.typing as npt
+import pandas as pd
+from astropy.stats import sigma_clip
+from scipy import sparse, stats
+from tqdm import tqdm
+
+from . import __version__
+from .perturbation import PerturbationMatrix3D
 from .utils import (
+    _find_uncontaminated_pixels,
     _make_A_polar,
+    bspline_smooth,
     solve_linear_model,
     sparse_lessthan,
     threshold_bin,
-    bspline_smooth,
-    _find_uncontaminated_pixels,
 )
-from .perturbation import PerturbationMatrix3D
-from . import __version__
 
 
 class Machine(object):
@@ -38,26 +41,26 @@ class Machine(object):
 
     def __init__(
         self,
-        time,
-        flux,
-        flux_err,
-        ra,
-        dec,
-        sources,
-        column,
-        row,
-        limit_radius=24.0,
-        time_mask=None,
-        n_r_knots=10,
-        n_phi_knots=15,
-        time_nknots=10,
-        time_resolution=200,
-        time_radius=8,
-        rmin=1,
-        rmax=16,
-        cut_r=6,
-        sparse_dist_lim=40,
-        sources_flux_column="phot_g_mean_flux",
+        time: npt.ArrayLike,
+        flux: npt.ArrayLike,
+        flux_err: npt.ArrayLike,
+        ra: npt.ArrayLike,
+        dec: npt.ArrayLike,
+        sources: pd.DataFrame,
+        column: npt.ArrayLike,
+        row: npt.ArrayLike,
+        limit_radius: float = 24.0,
+        time_mask: Optional[npt.ArrayLike] = None,
+        n_r_knots: int = 10,
+        n_phi_knots: int = 15,
+        time_nknots: int = 10,
+        time_resolution: int = 200,
+        time_radius: float = 8,
+        rmin: float = 1,
+        rmax: float = 16,
+        cut_r: float = 6,
+        sparse_dist_lim: float = 40,
+        sources_flux_column: str = "phot_g_mean_flux",
     ):
         """
         Parameters
@@ -205,8 +208,8 @@ class Machine(object):
 
     def __repr__(self):
         return f"Machine (N sources, N times, N pixels): {self.shape}"
-    
-    def _update_delta_arrays(self, frame_index=0):
+
+    def _update_delta_arrays(self, frame_index: int = 0):
         """
         Wrapper method to update dra, ddec, r and phi.
 
@@ -223,7 +226,7 @@ class Machine(object):
         else:
             self._update_delta_sparse_arrays(frame_index=frame_index)
 
-    def _updated_delta_arrays(self, frame_index=0):
+    def _updated_delta_arrays(self, frame_index: int = 0):
         """
         Creates dra, ddec, r and phi numpy ndarrays .
 
@@ -252,7 +255,7 @@ class Machine(object):
         self.r = np.hypot(self.dra, self.ddec).to("arcsec")
         self.phi = np.arctan2(self.ddec, self.dra)
 
-    def _update_delta_sparse_arrays(self, frame_index=0):
+    def _update_delta_sparse_arrays(self, frame_index: int = 0):
         """
         Creates dra, ddec, r and phi arrays as sparse arrays to be used for dense data,
         e.g. Kepler FFIs or cluster fields. Assuming that there is no flux information
@@ -312,7 +315,13 @@ class Machine(object):
         del r_vals, phi_vals, nnz_inds, sparse_mask
         return
 
-    def _get_source_mask(self, source_flux_limit=1, iterations=2, plot=False, reference_frame=0):
+    def _get_source_mask(
+        self,
+        source_flux_limit: float = 1,
+        reference_frame: int = 0,
+        iterations: int = 2,
+        plot: bool = False,
+    ):
         """
         Find the round pixel mask that identifies pixels with contributions from ANY of source.
         The source mask is created from one frame, then with `self.radius` it can be updated
@@ -368,8 +377,6 @@ class Machine(object):
                 raise ValueError("Can not find source mask")
             l = np.polyfit(rbins[k], fbins[k], 3)
 
-            
-
             if sparse.issparse(self.r):
                 mean_model = self.r.copy()
                 mean_model.data = 10 ** np.polyval(l, mean_model.data)
@@ -402,7 +409,9 @@ class Machine(object):
             # plt.show()
 
         self.radius = self.source_mask.multiply(self.r).max(axis=1).toarray().ravel()
-        self.radius[self.radius < self.pixel_scale.value] = self.pixel_scale.value * 1.25
+        self.radius[self.radius < self.pixel_scale.value] = (
+            self.pixel_scale.value * 1.25
+        )
         self.source_mask = sparse_lessthan(self.r, self.radius)
         self._get_uncontaminated_pixel_mask()
 
@@ -415,8 +424,8 @@ class Machine(object):
             plt.ylabel("Normalized Log Flux")
             plt.show()
         return
-    
-    def _update_source_mask(self, frame_index=0, source_flux_limit=1):
+
+    def _update_source_mask(self, frame_index: int = 0, source_flux_limit: float = 1):
         """
         Update source mask using self.radius when the ra,dec coordinate grid changes
 
@@ -427,8 +436,10 @@ class Machine(object):
         """
         # check if surce radius exist, if not, we run source_mask first
         if not hasattr(self, "radius"):
-            self._get_source_mask(source_flux_limit=source_flux_limit, reference_frame=0)
-        
+            self._get_source_mask(
+                source_flux_limit=source_flux_limit, reference_frame=0
+            )
+
         # update delta arrays to use the asked frame
         self._update_delta_arrays(frame_index=frame_index)
 
@@ -463,33 +474,249 @@ class Machine(object):
         self.uncontaminated_source_mask.eliminate_zeros()
         return
 
-    # CH: We're not currently using this, but it might prove useful later so I will leave for now
     def _get_centroids(self):
         """
         Find the ra and dec centroid of the image, at each time.
         """
-        # centroids are astropy quantities
-        self.ra_centroid = np.zeros(self.nt)
-        self.dec_centroid = np.zeros(self.nt)
-        dra_m = self.uncontaminated_source_mask.multiply(self.dra).data
-        ddec_m = self.uncontaminated_source_mask.multiply(self.ddec).data
-        for t in range(self.nt):
-            wgts = self.uncontaminated_source_mask.multiply(
-                np.sqrt(np.abs(self.flux[t]))
-            ).data
-            # mask out non finite values and background pixels
-            k = (np.isfinite(wgts)) & (
-                self.uncontaminated_source_mask.multiply(self.flux[t]).data > 100
-            )
-            self.ra_centroid[t] = np.average(dra_m[k], weights=wgts[k])
-            self.dec_centroid[t] = np.average(ddec_m[k], weights=wgts[k])
-        del dra_m, ddec_m
-        self.ra_centroid *= u.deg
-        self.dec_centroid *= u.deg
-        self.ra_centroid_avg = self.ra_centroid.mean()
-        self.dec_centroid_avg = self.dec_centroid.mean()
+        raise NotImplementedError
 
+    def build_shape_model(
+        self,
+        flux_cut_off: float = 1,
+        frame_index: Union[str, int] = 0,
+        bin_data: bool = False,
+        plot: bool = False,
+        **kwargs,
+    ):
+        """
+        Builds a sparse model matrix of shape nsources x npixels to be used when
+        fitting each source pixels to estimate its PSF photometry
+
+        Parameters
+        ----------
+        flux_cut_off: float
+            the flux in COUNTS at which to stop evaluating the model!
+        frame_index : string or int
+            The frame index used to build the shape model, if "mean" then use the
+            mean value across time
+        bin_data : boolean
+            Bin flux data spatially to increase SNR before fitting the shape model
+        plot : boolean
+            Make a diagnostic plot
+        **kwargs
+            Keyword arguments to be passed to `_get_source_mask()`
+        """
+
+        # Mask of shape nsources x number of pixels, one where flux from a
+        # source exists
+        # if not hasattr(self, "source_mask"):
+        self._update_source_mask(frame_index=frame_index, **kwargs)
+
+        # for iter in range(niters):
+        flux_estimates = self.source_flux_estimates[:, None]
+
+        if frame_index == "mean":
+            f = (self.flux[self.time_mask]).mean(axis=0)
+            # fe = (self.flux_err[self.time_mask] ** 2).sum(axis=0) ** 0.5 / self.nt
+        elif isinstance(frame_index, int):
+            f = self.flux[frame_index]
+            # fe = self.flux_err[frame_index]
+
+        mean_f = np.log10(
+            self.uncontaminated_source_mask.astype(float)
+            .multiply(f)
+            .multiply(1 / flux_estimates)
+            .data
+        )
+        # Actual Kepler errors cause all sorts of instability
+        # mean_f_err = (
+        #     self.uncontaminated_source_mask.astype(float)
+        #     .multiply(fe / (f * np.log(10)))
+        #     .multiply(1 / flux_estimates)
+        #     .data
+        # )
+        # We only need these weights for the wings, so we'll use poisson noise
+        mean_f_err = (
+            self.uncontaminated_source_mask.astype(float)
+            .multiply((f**0.5) / (f * np.log(10)))
+            .multiply(1 / flux_estimates)
+            .data
+        )
+        mean_f_err.data = np.abs(mean_f_err.data)
+
+        # take value from Quantity is not necessary
+        phi_b = self.uncontaminated_source_mask.multiply(self.phi).data
+        r_b = self.uncontaminated_source_mask.multiply(self.r).data
+
+        if bin_data:
+            # number of bins is hardcoded to work with FFI or TPFs accordingly
+            # I found 30 wirks good with TPF stacks (<10000 pixels),
+            # 90 with FFIs (tipically >50k pixels), and 60 in between.
+            # this could be improved later if necessary
+            nbins = (
+                30 if mean_f.shape[0] <= 1e4 else (60 if mean_f.shape[0] <= 5e4 else 90)
+            )
+            _, phi_b, r_b, mean_f, mean_f_err = threshold_bin(
+                phi_b,
+                r_b,
+                mean_f,
+                z_err=mean_f_err,
+                bins=nbins,
+                abs_thresh=5,
+            )
+
+        # build a design matrix A with b-splines basis in radius and angle axis.
+        A = _make_A_polar(
+            phi_b.ravel(),
+            r_b.ravel(),
+            rmin=self.rmin,
+            rmax=self.rmax,
+            cut_r=self.cut_r,
+            n_r_knots=self.n_r_knots,
+            n_phi_knots=self.n_phi_knots,
+        )
+        prior_sigma = np.ones(A.shape[1]) * 10
+        prior_mu = np.zeros(A.shape[1]) - 10
+
+        nan_mask = np.isfinite(mean_f.ravel())
+
+        # we solve for A * psf_w = mean_f
+        psf_w, psf_w_err = solve_linear_model(
+            A,
+            y=mean_f.ravel(),
+            #            y_err=mean_f_err.ravel(),
+            k=nan_mask,
+            prior_mu=prior_mu,
+            prior_sigma=prior_sigma,
+            errors=True,
+        )
+
+        bad = sigma_clip(mean_f.ravel() - A.dot(psf_w), sigma=5).mask
+
+        psf_w, psf_w_err = solve_linear_model(
+            A,
+            y=mean_f.ravel(),
+            #            y_err=mean_f_err.ravel(),
+            k=nan_mask & ~bad,
+            prior_mu=prior_mu,
+            prior_sigma=prior_sigma,
+            errors=True,
+        )
+
+        self.clean_pixel_mask = nan_mask & ~bad
+        self.psf_w = psf_w
+        self.psf_w_err = psf_w_err
+        self.normalized_shape_model = False
+
+        # We then build the same design matrix for all pixels with flux
+        # this non-normalized mean model is temporary and used to re-create a better
+        # `source_mask`
+        self._get_mean_model()
+        # remove background pixels and recreate mean model
+        self._update_source_mask_remove_bkg_pixels(
+            flux_cut_off=flux_cut_off, frame_index=frame_index
+        )
+
+        if plot:
+            return self.plot_shape_model(frame_index=frame_index, bin_data=bin_data)
         return
+    
+    def _get_mean_model(self):
+        """
+        Convenience function to make the scene model
+        """
+        Ap = _make_A_polar(
+            self.source_mask.multiply(self.phi).data,
+            self.source_mask.multiply(self.r).data,
+            rmin=self.rmin,
+            rmax=self.rmax,
+            cut_r=self.cut_r,
+            n_r_knots=self.n_r_knots,
+            n_phi_knots=self.n_phi_knots,
+        )
+
+        # And create a `mean_model` that has the psf model for all pixels with fluxes
+        mean_model = sparse.csr_matrix(self.r.shape)
+        m = 10 ** Ap.dot(self.psf_w)
+        m[~np.isfinite(m)] = 0
+        mean_model[self.source_mask] = m
+        mean_model.eliminate_zeros()
+        self.mean_model = mean_model
+
+    def _update_source_mask_remove_bkg_pixels(
+        self, flux_cut_off: float = 1, frame_index: Union[str, int] = "mean"
+    ):
+        """
+        Update the `source_mask` to remove pixels that do not contribuite to the PRF
+        shape.
+        First, re-estimate the source flux usign the precomputed `mean_model`.
+        This re-estimation is used to remove sources with bad prediction and update
+        the `source_mask` by removing background pixels that do not contribuite to
+        the PRF shape.
+        Pixels with normalized flux > `flux_cut_off` are kept.
+
+        Parameters
+        ----------
+        flux_cut_off : float
+            Lower limit for the normalized flux predicted from the mean model.
+        frame_index : string or int
+            The frame index to be used, if "mean" then use the
+            mean value across time
+        """
+
+        # Re-estimate source flux
+        # -----
+        prior_mu = self.source_flux_estimates
+        prior_sigma = (
+            np.ones(self.mean_model.shape[0]) * 10 * self.source_flux_estimates
+        )
+
+        if frame_index == "mean":
+            f = self.flux.mean(axis=0)
+            fe = (self.flux_err **2 ).sum(axis=0) ** 0.5 / self.nt
+        elif isinstance(frame_index, int):
+            f = self.flux[frame_index]
+            fe = self.flux_err[frame_index]
+
+        X = self.mean_model.copy()
+        X = X.T
+
+        sigma_w_inv = X.T.dot(X.multiply(1 / fe[:, None] ** 2)).toarray()
+        sigma_w_inv += np.diag(1 / (prior_sigma**2))
+        B = X.T.dot((f / fe**2))
+        B += prior_mu / (prior_sigma**2)
+        ws = np.linalg.solve(sigma_w_inv, B)
+        werrs = np.linalg.inv(sigma_w_inv).diagonal() ** 0.5
+
+        # -----
+
+        # Rebuild source mask
+        ok = np.abs(ws - self.source_flux_estimates) / werrs > 3
+        ok &= ((ws / self.source_flux_estimates) < 10) & (
+            (self.source_flux_estimates / ws) < 10
+        )
+        ok &= ws > 10
+        ok &= werrs > 0
+
+        self.source_flux_estimates[ok] = ws[ok]
+
+        self.source_mask = (
+            self.mean_model.multiply(
+                self.mean_model.T.dot(self.source_flux_estimates)
+            ).tocsr()
+            > flux_cut_off
+        )
+
+        # Recreate uncontaminated mask
+        self._get_uncontaminated_pixel_mask()
+        # self.uncontaminated_source_mask = self.uncontaminated_source_mask.multiply(
+        #    (self.mean_model.max(axis=1) < 1)
+        # )
+
+        # create the final normalized mean model!
+        # self._get_normalized_mean_model()
+        self._get_mean_model()
+        self.flux_cut_off = flux_cut_off
 
     def build_time_model(
         self,
@@ -673,7 +900,7 @@ class Machine(object):
         for count in [0, 1, 2]:
             P.fit(flux_norm, flux_err=flux_err_norm, pixel_mask=k)
             res = flux_binned - P.matrix.dot(P.weights).reshape(flux_binned.shape)
-            chi2 = np.sum((res) ** 2 / (flux_err_binned ** 2), axis=0) / P.nbins
+            chi2 = np.sum((res) ** 2 / (flux_err_binned**2), axis=0) / P.nbins
             bad_targets = sigma_clip(chi2, sigma=5).mask
             bad_targets = bad_targets.all(axis=0)
             k &= ~bad_targets
@@ -816,235 +1043,6 @@ class Machine(object):
 
         return fig1, fig2
 
-    def build_shape_model(
-        self, plot=False, flux_cut_off=1, frame_index="mean", bin_data=False, **kwargs
-    ):
-        """
-        Builds a sparse model matrix of shape nsources x npixels to be used when
-        fitting each source pixels to estimate its PSF photometry
-
-        Parameters
-        ----------
-        plot : boolean
-            Make a diagnostic plot
-        flux_cut_off: float
-            the flux in COUNTS at which to stop evaluating the model!
-        frame_index : string or int
-            The frame index used to build the shape model, if "mean" then use the
-            mean value across time
-        bin_data : boolean
-            Bin flux data spatially to increase SNR before fitting the shape model
-        **kwargs
-            Keyword arguments to be passed to `_get_source_mask()`
-        """
-
-        # Mask of shape nsources x number of pixels, one where flux from a
-        # source exists
-        # if not hasattr(self, "source_mask"):
-        self._get_source_mask(**kwargs)
-
-        # for iter in range(niters):
-        flux_estimates = self.source_flux_estimates[:, None]
-
-        if frame_index == "mean":
-            f = (self.flux[self.time_mask]).mean(axis=0)
-        elif isinstance(frame_index, int):
-            f = self.flux[frame_index]
-        # f, fe = (self.flux[self.time_mask]).mean(axis=0), (
-        #     (self.flux_err[self.time_mask] ** 2).sum(axis=0) ** 0.5
-        # ) / (self.nt)
-
-        mean_f = np.log10(
-            self.uncontaminated_source_mask.astype(float)
-            .multiply(f)
-            .multiply(1 / flux_estimates)
-            .data
-        )
-        # Actual Kepler errors cause all sorts of instability
-        # mean_f_err = (
-        #     self.uncontaminated_source_mask.astype(float)
-        #     .multiply(fe / (f * np.log(10)))
-        #     .multiply(1 / flux_estimates)
-        #     .data
-        # )
-        # We only need these weights for the wings, so we'll use poisson noise
-        mean_f_err = (
-            self.uncontaminated_source_mask.astype(float)
-            .multiply((f ** 0.5) / (f * np.log(10)))
-            .multiply(1 / flux_estimates)
-            .data
-        )
-        mean_f_err.data = np.abs(mean_f_err.data)
-
-        # take value from Quantity is not necessary
-        phi_b = self.uncontaminated_source_mask.multiply(self.phi).data
-        r_b = self.uncontaminated_source_mask.multiply(self.r).data
-
-        if bin_data:
-            # number of bins is hardcoded to work with FFI or TPFs accordingly
-            # I found 30 wirks good with TPF stacks (<10000 pixels),
-            # 90 with FFIs (tipically >50k pixels), and 60 in between.
-            # this could be improved later if necessary
-            nbins = (
-                30 if mean_f.shape[0] <= 1e4 else (60 if mean_f.shape[0] <= 5e4 else 90)
-            )
-            _, phi_b, r_b, mean_f, mean_f_err = threshold_bin(
-                phi_b,
-                r_b,
-                mean_f,
-                z_err=mean_f_err,
-                bins=nbins,
-                abs_thresh=5,
-            )
-
-        # build a design matrix A with b-splines basis in radius and angle axis.
-        A = _make_A_polar(
-            phi_b.ravel(),
-            r_b.ravel(),
-            rmin=self.rmin,
-            rmax=self.rmax,
-            cut_r=self.cut_r,
-            n_r_knots=self.n_r_knots,
-            n_phi_knots=self.n_phi_knots,
-        )
-        prior_sigma = np.ones(A.shape[1]) * 10
-        prior_mu = np.zeros(A.shape[1]) - 10
-
-        nan_mask = np.isfinite(mean_f.ravel())
-
-        # we solve for A * psf_w = mean_f
-        psf_w, psf_w_err = solve_linear_model(
-            A,
-            y=mean_f.ravel(),
-            #            y_err=mean_f_err.ravel(),
-            k=nan_mask,
-            prior_mu=prior_mu,
-            prior_sigma=prior_sigma,
-            errors=True,
-        )
-
-        bad = sigma_clip(mean_f.ravel() - A.dot(psf_w), sigma=5).mask
-
-        psf_w, psf_w_err = solve_linear_model(
-            A,
-            y=mean_f.ravel(),
-            #            y_err=mean_f_err.ravel(),
-            k=nan_mask & ~bad,
-            prior_mu=prior_mu,
-            prior_sigma=prior_sigma,
-            errors=True,
-        )
-
-        self.clean_pixel_mask = nan_mask & ~bad
-        self.psf_w = psf_w
-        self.psf_w_err = psf_w_err
-        self.normalized_shape_model = False
-
-        # We then build the same design matrix for all pixels with flux
-        # this non-normalized mean model is temporary and used to re-create a better
-        # `source_mask`
-        self._get_mean_model()
-        # remove background pixels and recreate mean model
-        self._update_source_mask_remove_bkg_pixels(
-            flux_cut_off=flux_cut_off, frame_index=frame_index
-        )
-
-        if plot:
-            return self.plot_shape_model(frame_index=frame_index, bin_data=bin_data)
-        return
-
-    def _update_source_mask_remove_bkg_pixels(self, flux_cut_off=1, frame_index="mean"):
-        """
-        Update the `source_mask` to remove pixels that do not contribuite to the PRF
-        shape.
-        First, re-estimate the source flux usign the precomputed `mean_model`.
-        This re-estimation is used to remove sources with bad prediction and update
-        the `source_mask` by removing background pixels that do not contribuite to
-        the PRF shape.
-        Pixels with normalized flux > `flux_cut_off` are kept.
-
-        Parameters
-        ----------
-        flux_cut_off : float
-            Lower limit for the normalized flux predicted from the mean model.
-        frame_index : string or int
-            The frame index to be used, if "mean" then use the
-            mean value across time
-        """
-
-        # Re-estimate source flux
-        # -----
-        prior_mu = self.source_flux_estimates
-        prior_sigma = (
-            np.ones(self.mean_model.shape[0]) * 10 * self.source_flux_estimates
-        )
-
-        if frame_index == "mean":
-            f, fe = (self.flux).mean(axis=0), (
-                (self.flux_err ** 2).sum(axis=0) ** 0.5
-            ) / (self.nt)
-        elif isinstance(frame_index, int):
-            f, fe = self.flux[frame_index], self.flux_err[frame_index]
-
-        X = self.mean_model.copy()
-        X = X.T
-
-        sigma_w_inv = X.T.dot(X.multiply(1 / fe[:, None] ** 2)).toarray()
-        sigma_w_inv += np.diag(1 / (prior_sigma ** 2))
-        B = X.T.dot((f / fe ** 2))
-        B += prior_mu / (prior_sigma ** 2)
-        ws = np.linalg.solve(sigma_w_inv, B)
-        werrs = np.linalg.inv(sigma_w_inv).diagonal() ** 0.5
-
-        # -----
-
-        # Rebuild source mask
-        ok = np.abs(ws - self.source_flux_estimates) / werrs > 3
-        ok &= ((ws / self.source_flux_estimates) < 10) & (
-            (self.source_flux_estimates / ws) < 10
-        )
-        ok &= ws > 10
-        ok &= werrs > 0
-
-        self.source_flux_estimates[ok] = ws[ok]
-
-        self.source_mask = (
-            self.mean_model.multiply(
-                self.mean_model.T.dot(self.source_flux_estimates)
-            ).tocsr()
-            > flux_cut_off
-        )
-
-        # Recreate uncontaminated mask
-        self._get_uncontaminated_pixel_mask()
-        # self.uncontaminated_source_mask = self.uncontaminated_source_mask.multiply(
-        #    (self.mean_model.max(axis=1) < 1)
-        # )
-
-        # create the final normalized mean model!
-        # self._get_normalized_mean_model()
-        self._get_mean_model()
-
-    def _get_mean_model(self):
-        """Convenience function to make the scene model"""
-        Ap = _make_A_polar(
-            self.source_mask.multiply(self.phi).data,
-            self.source_mask.multiply(self.r).data,
-            rmin=self.rmin,
-            rmax=self.rmax,
-            cut_r=self.cut_r,
-            n_r_knots=self.n_r_knots,
-            n_phi_knots=self.n_phi_knots,
-        )
-
-        # And create a `mean_model` that has the psf model for all pixels with fluxes
-        mean_model = sparse.csr_matrix(self.r.shape)
-        m = 10 ** Ap.dot(self.psf_w)
-        m[~np.isfinite(m)] = 0
-        mean_model[self.source_mask] = m
-        mean_model.eliminate_zeros()
-        self.mean_model = mean_model
-
     def _get_normalized_mean_model(self, npoints=300, plot=False):
         """
         Renomarlize shape model to sum 1
@@ -1087,7 +1085,7 @@ class Machine(object):
 
         # double integral using trapezoidal rule
         self.mean_model_integral = np.trapz(
-            np.trapz(10 ** mean_model_hd_ma, r_hd[:, 0], axis=0),
+            np.trapz(10**mean_model_hd_ma, r_hd[:, 0], axis=0),
             phi_hd[0, :],
             axis=0,
         )
@@ -1207,9 +1205,7 @@ class Machine(object):
                 # evaluate the HD model
                 modelhd = 10 ** Ap.dot(self.psf_w)
                 # compute the model sum for source, how much of the source is in data
-                mean_model_hd_sum.append(
-                    np.trapz(modelhd, dx=1 / npoints_per_pixel ** 2)
-                )
+                mean_model_hd_sum.append(np.trapz(modelhd, dx=1 / npoints_per_pixel**2))
 
             # get normalized psf fraction metric
             self.source_psf_fraction = np.array(
@@ -1272,7 +1268,7 @@ class Machine(object):
         dy = dy.data * u.deg.to(u.arcsecond)
 
         radius = np.maximum(np.abs(dx).max(), np.abs(dy).max()) * 1.1
-        vmin, vmax = np.nanpercentile(mean_f, [10, 93])
+        vmin, vmax = np.nanpercentile(mean_f, [3, 93])
 
         if bin_data:
             nbins = 30 if mean_f.shape[0] <= 5e3 else 90
@@ -1374,8 +1370,8 @@ class Machine(object):
         ax[1, 0].set_aspect("equal", adjustable="box")
         cbar = fig.colorbar(im, ax=ax[:2, 1], shrink=0.7, location="right")
         cbar.set_label("log$_{10}$ Normalized Flux")
-        mean_f = 10 ** mean_f
-        model = 10 ** model
+        mean_f = 10**mean_f
+        model = 10**model
 
         # im = ax[2, 0].scatter(
         #     dx,
@@ -1448,15 +1444,21 @@ class Machine(object):
             desc=f"Fitting {self.nsources} Sources (w. VA)",
             disable=self.quiet,
         ):
+            # update source mask for current frame
+            self._update_source_mask(frame_index=tdx)
+            self._get_mean_model()
+            self._update_source_mask_remove_bkg_pixels(
+                flux_cut_off=1e-2, frame_index=tdx
+            )
             X = self.mean_model.copy()
             X = X.T
 
             sigma_w_inv = X.T.dot(
                 X.multiply(1 / self.flux_err[tdx][:, None] ** 2)
             ).toarray()
-            sigma_w_inv += np.diag(1 / (prior_sigma ** 2))
+            sigma_w_inv += np.diag(1 / (prior_sigma**2))
             B = X.T.dot((self.flux[tdx] / self.flux_err[tdx] ** 2))
-            B += prior_mu / (prior_sigma ** 2)
+            B += prior_mu / (prior_sigma**2)
             self.ws[tdx] = np.linalg.solve(sigma_w_inv, np.nan_to_num(B))
             self.werrs[tdx] = np.linalg.inv(sigma_w_inv).diagonal() ** 0.5
             self.model_flux[tdx] = X.dot(self.ws[tdx])
@@ -1474,9 +1476,9 @@ class Machine(object):
                 sigma_w_inv = X.T.dot(
                     X.multiply(1 / self.flux_err[tdx][:, None] ** 2)
                 ).toarray()
-                sigma_w_inv += np.diag(1 / (prior_sigma ** 2))
+                sigma_w_inv += np.diag(1 / (prior_sigma**2))
                 B = X.T.dot((self.flux[tdx] / self.flux_err[tdx] ** 2))
-                B += prior_mu / (prior_sigma ** 2)
+                B += prior_mu / (prior_sigma**2)
                 self.ws_va[tdx] = np.linalg.solve(sigma_w_inv, np.nan_to_num(B))
                 self.werrs_va[tdx] = np.linalg.inv(sigma_w_inv).diagonal() ** 0.5
                 self.model_flux[tdx] = X.dot(self.ws_va[tdx])
