@@ -345,7 +345,7 @@ class Machine(object):
         """
         # make sure delta arrays are from the reference frame.
         self._update_delta_arrays(frame_index=reference_frame)
-        self.radius = 5 * self.pixel_scale.to(u.arcsecond).value
+        self.radius = 3 * self.pixel_scale.to(u.arcsecond).value
         if not sparse.issparse(self.r):
             self.rough_mask = sparse.csr_matrix(self.r < self.radius)
         else:
