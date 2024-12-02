@@ -15,7 +15,6 @@ from scipy import sparse, stats
 from tqdm import tqdm
 
 from . import __version__
-from .perturbation import PerturbationMatrix3D
 from .utils import (
     _find_uncontaminated_pixels,
     _make_A_polar,
@@ -49,18 +48,14 @@ class Machine(object):
         sources: pd.DataFrame,
         column: npt.ArrayLike,
         row: npt.ArrayLike,
-        limit_radius: float = 24.0,
         time_mask: Optional[npt.ArrayLike] = None,
         n_r_knots: int = 10,
         n_phi_knots: int = 15,
-        time_nknots: int = 10,
-        time_resolution: int = 200,
-        time_radius: float = 8,
-        rmin: float = 1,
-        rmax: float = 16,
-        cut_r: float = 6,
-        sparse_dist_lim: float = 40,
-        sources_flux_column: str = "phot_g_mean_flux",
+        rmin: float = 0.1,
+        rmax: float = 2,
+        cut_r: float = 0.2,
+        sparse_dist_lim: float = 4,
+        sources_flux_column: str = "flux",
     ):
         """
         Parameters
@@ -81,8 +76,6 @@ class Machine(object):
             Data array containing the "columns" of the detector that each pixel is on.
         row: np.ndarray
             Data array containing the "rows" of the detector that each pixel is on.
-        limit_radius: numpy.ndarray
-            Radius limit in arcsecs to select stars to be used for PRF modeling
         time_mask:  np.ndarray of booleans
             A boolean array of shape time. Only values where this mask is `True`
             will be used to calculate the average image for fitting the PSF.
@@ -148,7 +141,7 @@ class Machine(object):
             the design matrix, options are "linear" or "sqrt".
         quiet: booleans
             Quiets TQDM progress bars.
-        contaminant_mag_limit: float
+        contaminant_flux_limit: float
           The limiting magnitude at which a sources is considered as contaminant
         """
 
@@ -164,13 +157,8 @@ class Machine(object):
         self.sources = sources
         self.column = column
         self.row = row
-        self.limit_radius = limit_radius * u.arcsecond
-        self.limit_flux = 1e4
         self.n_r_knots = n_r_knots
         self.n_phi_knots = n_phi_knots
-        self.time_nknots = time_nknots
-        self.time_resolution = time_resolution
-        self.time_radius = time_radius
         self.rmin = rmin
         self.rmax = rmax
         self.cut_r = cut_r
@@ -178,7 +166,7 @@ class Machine(object):
         self.cartesian_knot_spacing = "sqrt"
         # disble tqdm prgress bar when running in HPC
         self.quiet = False
-        self.contaminant_mag_limit = None
+        self.contaminant_flux_limit = None
 
         self.pixel_scale = (
             np.hypot(
@@ -208,6 +196,14 @@ class Machine(object):
 
     def __repr__(self):
         return f"Machine (N sources, N times, N pixels): {self.shape}"
+    
+    def pixel_coordinates(self, frame_index: int=0):
+        COL, ROW = (
+            self.WCSs[frame_index]
+            .all_world2pix(self.sources.loc[:, ["ra", "dec"]].values, 0.0)
+            .T
+        )
+        return ROW, COL
 
     def _update_delta_arrays(self, frame_index: int = 0):
         """
@@ -375,7 +371,7 @@ class Machine(object):
             k = np.isfinite(fbins)
             if not k.any():
                 raise ValueError("Can not find source mask")
-            l = np.polyfit(rbins[k], fbins[k], 3)
+            l = np.polyfit(rbins[k], fbins[k], 1)
 
             if sparse.issparse(self.r):
                 mean_model = self.r.copy()
@@ -393,21 +389,6 @@ class Machine(object):
                 self.source_mask
             )
 
-            # plt.scatter(self.r.data, mean_model.multiply(self.source_flux_estimates[:, None]).data, s=1, alpha=0.6)
-            # plt.axhline(source_flux_limit, c="tab:red", zorder=50000)
-            # plt.yscale("log")
-            # plt.xlim(-0.1, 1.2)
-            # plt.ylim(0.001, 1e3)
-            # plt.show()
-
-            # plt.scatter(r, 10 ** max_f, s=2, alpha=0.5)
-            # plt.scatter(self.r.data, mean_model.data, s=2)
-            # plt.xlim(rbins[k].min() - 0.04, rbins[k].max() + 0.04)
-            # plt.ylim(-0.05, 1.5)
-            # plt.xlabel("r")
-            # plt.ylabel("flux")
-            # plt.show()
-
         self.radius = self.source_mask.multiply(self.r).max(axis=1).toarray().ravel()
         self.radius[self.radius < self.pixel_scale.value] = (
             self.pixel_scale.value * 1.25
@@ -416,12 +397,51 @@ class Machine(object):
         self._get_uncontaminated_pixel_mask()
 
         if plot:
-            plt.plot(rbins[k], fbins[k], label="data")
-            plt.plot(rbins[k], np.polyval(l, rbins[k]), label="polynomial")
-            plt.title("Binned Flux Source Proflle")
-            plt.legend()
-            plt.xlabel("r [arcsec]")
-            plt.ylabel("Normalized Log Flux")
+            fig, ax = plt.subplots(1, 3, figsize=(15, 3))
+
+            ax[0].set_title("All Sources Radius")
+            ax[0].scatter(
+                r, 10**max_f, s=2, alpha=0.5, label="Pixel data", rasterized=True
+            )
+            ax[0].scatter(
+                self.r.data, mean_model.data, s=2, label="Mean Model", rasterized=True
+            )
+            ax[0].legend(loc="upper right")
+            ax[0].set_xlim(rbins[k].min() - 0.04, rbins[k].max() + 0.04)
+            ax[0].set_ylim(-0.05, 1.5)
+            ax[0].set_xlabel("r [arcsec]")
+            ax[0].set_ylabel("Normalized flux")
+
+            ax[1].set_title("Binned Flux Source Profile")
+            ax[1].plot(rbins[k], fbins[k], label="Data")
+            ax[1].plot(rbins[k], np.polyval(l, rbins[k]), label="Polynomial")
+            ax[1].legend(loc="upper right")
+            ax[1].set_xlabel("r [arcsec]")
+            ax[1].set_ylabel("Normalized Log Flux")
+
+            ax[2].set_title("Evaluated Source Radius")
+            ax[2].scatter(
+                self.r.data,
+                mean_model.multiply(self.source_flux_estimates[:, None]).data,
+                s=1,
+                alpha=0.6,
+                label="Evaluated pixel flux",
+                rasterized=True,
+            )
+            ax[2].axhline(
+                source_flux_limit,
+                c="tab:red",
+                zorder=50000,
+                label="Source flux limit",
+                rasterized=True,
+            )
+            ax[2].legend(loc="upper right")
+            ax[2].set_yscale("log")
+            ax[2].set_xlim(-0.1, 1.2)
+            ax[2].set_ylim(0.1, 1e4)
+            ax[2].set_xlabel("r [arcsec]")
+            ax[2].set_ylabel("Flux [e-/s]")
+
             plt.show()
         return
 
@@ -456,9 +476,9 @@ class Machine(object):
         """
 
         # we flag sources fainter than mag_limit as non-contaminant
-        if isinstance(self.contaminant_mag_limit, (float, int)):
+        if isinstance(self.contaminant_flux_limit, (float, int)):
             aux = self.source_mask.multiply(
-                self.source_flux_estimates[:, None] < self.contaminant_mag_limit
+                self.source_flux_estimates[:, None] > self.contaminant_flux_limit
             )
             aux.eliminate_zeros()
             self.uncontaminated_source_mask = aux.multiply(
@@ -620,7 +640,7 @@ class Machine(object):
         if plot:
             return self.plot_shape_model(frame_index=frame_index, bin_data=bin_data)
         return
-    
+
     def _get_mean_model(self):
         """
         Convenience function to make the scene model
@@ -673,17 +693,17 @@ class Machine(object):
 
         if frame_index == "mean":
             f = self.flux.mean(axis=0)
-            fe = (self.flux_err **2 ).sum(axis=0) ** 0.5 / self.nt
+            # fe = (self.flux_err **2 ).sum(axis=0) ** 0.5 / self.nt
         elif isinstance(frame_index, int):
             f = self.flux[frame_index]
-            fe = self.flux_err[frame_index]
+            # fe = self.flux_err[frame_index]
 
         X = self.mean_model.copy()
         X = X.T
 
-        sigma_w_inv = X.T.dot(X.multiply(1 / fe[:, None] ** 2)).toarray()
+        sigma_w_inv = X.T.dot(X.multiply(1 / 1)).toarray()
         sigma_w_inv += np.diag(1 / (prior_sigma**2))
-        B = X.T.dot((f / fe**2))
+        B = X.T.dot((f / 1))
         B += prior_mu / (prior_sigma**2)
         ws = np.linalg.solve(sigma_w_inv, B)
         werrs = np.linalg.inv(sigma_w_inv).diagonal() ** 0.5
@@ -943,7 +963,7 @@ class Machine(object):
         dy = dy.data * u.deg.to(u.arcsecond)
 
         radius = np.maximum(np.abs(dx).max(), np.abs(dy).max()) * 1.1
-        vmin, vmax = np.nanpercentile(mean_f, [3, 93])
+        vmin, vmax = np.nanpercentile(mean_f, [5, 93])
 
         if bin_data:
             nbins = 30 if mean_f.shape[0] <= 5e3 else 90
@@ -1113,25 +1133,33 @@ class Machine(object):
         for tdx in tqdm(
             range(self.nt),
             desc=f"Fitting {self.nsources} Sources (w. VA)",
-            disable=self.quiet,
+            # disable=self.quiet,
         ):
             # update source mask for current frame
             self._update_source_mask(frame_index=tdx)
             self._get_mean_model()
             self._update_source_mask_remove_bkg_pixels(
-                flux_cut_off=1e-2, frame_index=tdx
+                flux_cut_off=self.flux_cut_off, frame_index=tdx
             )
             X = self.mean_model.copy()
             X = X.T
 
-            sigma_w_inv = X.T.dot(
-                X.multiply(1 / self.flux_err[tdx][:, None] ** 2)
-            ).toarray()
-            sigma_w_inv += np.diag(1 / (prior_sigma**2))
-            B = X.T.dot((self.flux[tdx] / self.flux_err[tdx] ** 2))
-            B += prior_mu / (prior_sigma**2)
-            self.ws[tdx] = np.linalg.solve(sigma_w_inv, np.nan_to_num(B))
-            self.werrs[tdx] = np.linalg.inv(sigma_w_inv).diagonal() ** 0.5
+            # sigma_w_inv = X.T.dot(
+            #     X.multiply(1 / 1 ** 2)
+            # ).toarray()
+            # sigma_w_inv += np.diag(1 / (prior_sigma**2))
+            # B = X.T.dot((self.flux[tdx] / 1 ** 2))
+            # B += prior_mu / (prior_sigma**2)
+            # self.ws[tdx] = np.linalg.solve(sigma_w_inv, np.nan_to_num(B))
+            # self.werrs[tdx] = np.linalg.inv(sigma_w_inv).diagonal() ** 0.5
+            self.ws[tdx], self.werrs[tdx] = solve_linear_model(
+                X,
+                self.flux[tdx],
+                # y_err=self.flux_err[tdx],
+                prior_mu=prior_mu,
+                prior_sigma=prior_sigma,
+                errors=True,
+            )
             self.model_flux[tdx] = X.dot(self.ws[tdx])
 
         # check bad estimates

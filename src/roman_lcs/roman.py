@@ -1,15 +1,14 @@
 """Subclass of `Machine` that Specifically work with FFIs"""
 
 import os
+from typing import Optional, Union
 
-import astropy.units as u
 import fitsio
 import matplotlib.colors as colors
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from astropy.io import fits
-from astropy.time import Time
 from astropy.visualization import simple_norm
 from astropy.wcs import WCS
 from scipy import ndimage
@@ -34,19 +33,14 @@ class RomanMachine(Machine):
         sources,
         column,
         row,
-        dittered=True,
         cadenceno=None,
         wcs=None,
-        limit_radius=32.0,
         n_r_knots=9,
         n_phi_knots=15,
-        time_nknots=10,
-        time_resolution=200,
-        time_radius=8,
         cut_r=0.15,
         rmin=0.02,
         rmax=0.8,
-        sparse_dist_lim=40,
+        sparse_dist_lim=4,
         quality_mask=None,
         sources_flux_column="flux",
         sources_mag_column="F146",
@@ -98,35 +92,25 @@ class RomanMachine(Machine):
         self.ref_frame = 0
         self.cadenceno = cadenceno
 
-        if dittered:
-            self.ra_3d = ra  # .reshape(flux.shape[0], -1)
-            self.dec_3d = dec  # .reshape(flux.shape[0], -1)
-            self.WCSs = wcs
+        self.WCSs = wcs
         self.meta = meta
 
         # keep 2d image shape
         self.image_shape = flux.shape[1:]
-        # reshape flux and flux_err as [ntimes, npix]
-        self.flux = flux.reshape(flux.shape[0], -1)
-        self.flux_err = flux_err.reshape(flux_err.shape[0], -1)
         self.sources_mag_column = sources_mag_column
 
         # init `machine` object
         super().__init__(
             time,
-            self.flux,
-            self.flux_err,
-            self.ra_3d[self.ref_frame],
-            self.dec_3d[self.ref_frame],
+            flux.reshape(flux.shape[0], -1),
+            flux_err.reshape(flux_err.shape[0], -1),
+            ra.reshape(ra.shape[0], -1),
+            dec.reshape(dec.shape[0], -1),
             sources,
             column,
             row,
-            limit_radius=limit_radius,
             n_r_knots=n_r_knots,
             n_phi_knots=n_phi_knots,
-            time_nknots=time_nknots,
-            time_resolution=time_resolution,
-            time_radius=time_radius,
             cut_r=cut_r,
             rmin=rmin,
             rmax=rmax,
@@ -158,33 +142,19 @@ class RomanMachine(Machine):
     def column_2d(self):
         return self.column.reshape((self.image_shape))
 
-    def ra_2d(self, frame=0):
-        """
-        Return a 2D view of the Celestial coordinates in `frame`
+    @property
+    def ra_3d(self):
+        return self.ra.reshape((self.ra.shape[0], *self.image_shape))
 
-        Parameters
-        ----------
-        frame: int
-            Frame index
-        """
-        return self.ra_3d[frame].reshape((self.image_shape))
-
-    def dec_2d(self, frame=0):
-        """
-        Return a 2D view of the Celestial coordinates in `frame`
-
-        Parameters
-        ----------
-        frame: int
-            Frame index
-        """
-        return self.dec_3d[frame].reshape((self.image_shape))
+    @property
+    def dec_3d(self):
+        return self.dec.reshape((self.dec.shape[0], *self.image_shape))
 
     @staticmethod
     def from_file(
         fname,
-        # cutout_size=None,
-        # cutout_origin=[0, 0],
+        cutout_size=None,
+        cutout_origin=[0, 0],
         sources=None,
         **kwargs,
     ):
@@ -232,8 +202,8 @@ class RomanMachine(Machine):
             quality_mask,
         ) = _load_file(
             fname,
-            # cutout_size=cutout_size,
-            # cutout_origin=cutout_origin,
+            cutout_size=cutout_size,
+            cutout_origin=cutout_origin,
         )
 
         if ra.shape == flux.shape:
@@ -258,7 +228,7 @@ class RomanMachine(Machine):
         )
 
     def _mask_pixels(
-        self, pixel_saturation_limit: float = 2e4, magnitude_bright_limit: float = 17
+        self, pixel_saturation_limit: float = 2e4, magnitude_bright_limit: float = 13
     ):
         """
         Mask saturated pixels and halo/difraction pattern from bright sources.
@@ -317,7 +287,7 @@ class RomanMachine(Machine):
 
         return sat_mask
 
-    def _bright_sources_mask(self, magnitude_limit: float = 17, tolerance: float = 30):
+    def _bright_sources_mask(self, magnitude_limit: float = 13, tolerance: float = 30):
         """
         Finds and mask pixels with halos produced by bright stars (e.g. <8 mag).
 
@@ -344,16 +314,14 @@ class RomanMachine(Machine):
         return mask
 
     def _pointing_offset(self):
-        self.ra_offset = (self.ra_3d - self.ra_3d[0]).mean(axis=1)
-        self.dec_offset = (self.dec_3d - self.dec_3d[0]).mean(axis=1)
+        self.ra_offset = (self.ra - self.ra[0]).mean(axis=1)
+        self.dec_offset = (self.dec - self.dec[0]).mean(axis=1)
 
     def _get_source_mask(
         self,
-        upper_radius_limit=2.0,
-        lower_radius_limit=0.01,
-        upper_flux_limit=1e5,
-        lower_flux_limit=50,
-        correct_centroid_offset=False,
+        source_flux_limit: float = 1,
+        reference_frame: int = 0,
+        iterations: int = 2,
         plot=False,
     ):
         """
@@ -361,14 +329,19 @@ class RomanMachine(Machine):
         bright halo pixels in FFIs. See parameter descriptions in `Machine`.
         """
         super()._get_source_mask(
-            upper_radius_limit=upper_radius_limit,
-            lower_radius_limit=lower_radius_limit,
-            upper_flux_limit=upper_flux_limit,
-            lower_flux_limit=lower_flux_limit,
-            correct_centroid_offset=correct_centroid_offset,
+            source_flux_limit=source_flux_limit,
+            reference_frame=reference_frame,
+            iterations=iterations,
             plot=plot,
         )
-        self._remove_bad_pixels_from_source_mask()
+        # self._remove_bad_pixels_from_source_mask()
+
+    def _update_source_mask(self, frame_index: int = 0, source_flux_limit: float = 1):
+        super()._update_source_mask(
+            frame_index=frame_index,
+            source_flux_limit=source_flux_limit,
+        )
+        # self._remove_bad_pixels_from_source_mask()
 
     def _remove_bad_pixels_from_source_mask(self):
         """
@@ -384,7 +357,12 @@ class RomanMachine(Machine):
 
 
     def build_shape_model(
-        self, plot=False, flux_cut_off=1, frame_index="mean", bin_data=False, **kwargs
+        self, 
+        flux_cut_off: float = 1,
+        frame_index: Union[str, int] = 0,
+        bin_data: bool = False,
+        plot: bool = False,
+        **kwargs,
     ):
         """
         Adapted version of `machine.build_shape_model()` that masks out saturated and
@@ -399,7 +377,7 @@ class RomanMachine(Machine):
             **kwargs,
         )
         # include sat/halo pixels again into source_mask
-        self._remove_bad_pixels_from_source_mask()
+        # self._remove_bad_pixels_from_source_mask()
         if plot:
             return self.plot_shape_model(frame_index=frame_index, bin_data=bin_data)
 
@@ -459,7 +437,7 @@ class RomanMachine(Machine):
 
         table.writeto(output, checksum=True, overwrite=True)
 
-    def load_shape_model(self, input=None, plot=False, flux_cut_off=0.01):
+    def load_shape_model(self, input=None, plot=False, source_flux_limit=20, flux_cut_off=0.01):
         """
         Load and process a shape model for the sources.
 
@@ -494,21 +472,20 @@ class RomanMachine(Machine):
         # create source mask and uncontaminated pixel mask
         # if not hasattr(self, "source_mask"):
         self._get_source_mask(
-            upper_radius_limit=2.0,
-            lower_radius_limit=0.01,
-            upper_flux_limit=1e5,
-            lower_flux_limit=50,
-            correct_centroid_offset=False,
+            source_flux_limit=source_flux_limit,
+            plot=False,
+            reference_frame=self.ref_frame,
+            iterations=1,
         )
 
         # open file
         hdu = fits.open(input)
         # check if shape parameters are for correct mission, quarter, and channel
-        if hdu[1].header["MISSION"] != self.meta["MISSION"]:
+        if hdu[1].header["MISSION"].strip() != self.meta["MISSION"]:
             raise ValueError("Wrong shape model: file is for mission Roman")
         if int(hdu[1].header["FIELD"]) != self.meta["FIELD"]:
             raise ValueError("Wrong field")
-        if int(hdu[1].header["DETECTOR"]) != self.meta["DETECTOR"]:
+        if hdu[1].header["DETECTOR"].strip() != self.meta["DETECTOR"]:
             raise ValueError("Wrong DETECTOR")
 
         # load model hyperparameters and weights
@@ -529,9 +506,10 @@ class RomanMachine(Machine):
         self._get_mean_model()
         # remove background pixels and recreate mean model
         self._update_source_mask_remove_bkg_pixels(flux_cut_off=flux_cut_off)
+        # self._remove_bad_pixels_from_source_mask()
 
         if plot:
-            return self.plot_shape_model()
+            return self.plot_shape_model(frame_index=self.ref_frame)
         return
 
     def residuals(self, plot=False, zoom=False, metric="residuals"):
@@ -767,7 +745,11 @@ class RomanMachine(Machine):
         return ax
 
 
-def _load_file(fname, extension=0):
+def _load_file(
+    fname: list,
+    cutout_size: Optional[int]=None,
+    cutout_origin: Optional[list]=[0, 0],
+):
     """
     Helper function to load FFI files and parse data. It parses the FITS files to
     extract the image data and metadata. It checks that all files provided in fname
@@ -777,8 +759,6 @@ def _load_file(fname, extension=0):
     ----------
     fname : string or list of strings
         Name of the FFI files
-    extension : int
-        Number of HDU extension to use, for Kepler FFIs this corresponds to the channel
     cutout_size: int
         Size of (square) portion of FFIs to cut out
     cutout_origin: tuple
@@ -816,23 +796,38 @@ def _load_file(fname, extension=0):
     quality_mask = []
     cadno = []
 
+    # WFI ccd science image size
+    rmin = 0
+    rmax = 250
+    cmin = 0
+    cmax = 250
+
+    # set starting pixel
+    rmin += cutout_origin[0]
+    cmin += cutout_origin[1]
+
+    if (rmin > rmax) | (cmin > cmax):
+        raise ValueError("`cutout_origin` must be within the image.")
+    if cutout_size is not None:
+        rmax = np.min([rmin + cutout_size, rmax])
+        cmax = np.min([cmin + cutout_size, cmax])
+
     for k, f in tqdm(enumerate(fname), total=len(fname)):
         if not os.path.isfile(f):
             raise FileNotFoundError("FFI calibrated fits file does not exist: ", f)
-        aux = fitsio.FITS(f)[extension]
-        dims = aux.get_dims()
+        aux = fitsio.FITS(f)
 
-        if k == 0:
-            row_2d, col_2d = np.mgrid[0 : dims[0], 0 : dims[1]]
+        flux.append(aux[0][rmin:rmax, cmin:cmax].T)
+        flux_err.append(aux[1][rmin:rmax, cmin:cmax].T)
 
-        flux.append(aux[:, :].T)
-        flux_err.append(aux[:, :].T)
-
-        times.append((aux.read_header()["TEND"] + aux.read_header()["TSTART"]) / 2)
+        times.append((aux[0].read_header()["TEND"] + aux[0].read_header()["TSTART"]) / 2)
         quality_mask.append(0)
         cadno.append(k)
 
-        wcss.append(WCS(aux.read_header()))
+        dims = flux[-1].shape
+        if k == 0:
+            row_2d, col_2d = np.mgrid[0 : dims[0], 0 : dims[1]]
+        wcss.append(WCS(aux[0].read_header()))
         radec = (
             wcss[-1].all_pix2world(np.array([col_2d.ravel(), row_2d.ravel()]).T, 0.0).T
         )
@@ -848,15 +843,15 @@ def _load_file(fname, extension=0):
     dec_3d = np.array(dec_3d)
 
     meta = {
-        "MISSION": "Roman",
+        "MISSION": "Roman-Sim",
         "TELESCOP": "Roman",
-        "RADESYS": aux.read_header()["RADESYS"],
-        "EQUINOX": aux.read_header()["EQUINOX"],
-        "FILTER": aux.read_header()["FILTER"],
+        "RADESYS": aux[0].read_header()["RADESYS"],
+        "EQUINOX": aux[0].read_header()["EQUINOX"],
+        "FILTER": aux[0].read_header()["FILTER"],
         "FIELD": 1,
-        "DETECTOR": aux.read_header()["DETECTOR"],
-        "EXPOSURE": aux.read_header()["EXPOSURE"],
-        "READMODE": aux.read_header()["READMODE"],
+        "DETECTOR": aux[0].read_header()["DETECTOR"],
+        "EXPOSURE": aux[0].read_header()["EXPOSURE"],
+        "READMODE": aux[0].read_header()["READMODE"],
     }
 
     return (
