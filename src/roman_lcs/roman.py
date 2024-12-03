@@ -829,9 +829,9 @@ def _load_file(
 
     # WFI ccd science image size
     rmin = 0
-    rmax = 250
+    rmax = 4088
     cmin = 0
-    cmax = 250
+    cmax = 4088
 
     # set starting pixel
     rmin += cutout_origin[0]
