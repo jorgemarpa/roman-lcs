@@ -3,7 +3,9 @@
 import os
 from typing import Optional, Union
 
+import astropy.units as u
 import fitsio
+import lightkurve as lk
 import matplotlib.colors as colors
 import matplotlib.pyplot as plt
 import numpy as np
@@ -745,6 +747,35 @@ class RomanMachine(Machine):
         return ax
 
 
+    def get_lightcurves(self, mode: str = "lk"):
+        """
+        Bundle light curves as `lightkurve` objects is `mode=="lk"`
+        or as a DataFrame if `mode=="table"'.
+
+        Parameters
+        ----------
+        mode : str
+            What type of light curve wil be created
+        """
+        if mode == "lk":
+            lcs = []
+            for idx, s in self.sources.iterrows():
+
+                meta = {}
+                lc = lk.LightCurve(
+                    time=(self.time) * u.d,
+                    flux=self.ws[:, idx] * u.electron / u.second,
+                    flux_err=self.werrs[:, idx] * u.electron / u.second,
+                    meta=meta,
+                    time_format="mjd",
+                )
+                lcs.append(lc)
+
+            self.lcs = lk.LightCurveCollection(self.lcs)
+        elif mode == "table":
+            raise NotImplementedError
+
+
 def _load_file(
     fname: list,
     cutout_size: Optional[int]=None,
@@ -845,13 +876,14 @@ def _load_file(
     meta = {
         "MISSION": "Roman-Sim",
         "TELESCOP": "Roman",
+        "SOFTWARE": aux[0].read_header()["SOFTWARE"],
         "RADESYS": aux[0].read_header()["RADESYS"],
         "EQUINOX": aux[0].read_header()["EQUINOX"],
         "FILTER": aux[0].read_header()["FILTER"],
         "FIELD": 1,
         "DETECTOR": aux[0].read_header()["DETECTOR"],
         "EXPOSURE": aux[0].read_header()["EXPOSURE"],
-        "READMODE": aux[0].read_header()["READMODE"],
+        "READMODE": "ramp",
     }
 
     return (

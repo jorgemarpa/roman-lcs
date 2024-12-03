@@ -218,11 +218,11 @@ class Machine(object):
         # (JMP profile this)
         # https://github.com/SSDataLab/psfmachine/pull/17#issuecomment-866382898
         if self.nsources * self.npixels < 1e7:
-            self._update_delta_numpy_arrays(frame_index=frame_index)
+            self._updated_delta_numpy_arrays(frame_index=frame_index)
         else:
             self._update_delta_sparse_arrays(frame_index=frame_index)
 
-    def _updated_delta_arrays(self, frame_index: int = 0):
+    def _updated_delta_numpy_arrays(self, frame_index: int = 0):
         """
         Creates dra, ddec, r and phi numpy ndarrays .
 
@@ -343,7 +343,7 @@ class Machine(object):
         self._update_delta_arrays(frame_index=reference_frame)
         self.radius = 3 * self.pixel_scale.to(u.arcsecond).value
         if not sparse.issparse(self.r):
-            self.rough_mask = sparse.csr_matrix(self.r < self.radius)
+            self.rough_mask = sparse.csr_matrix(self.r.value < self.radius)
         else:
             self.rough_mask = sparse_lessthan(self.r, self.radius)
         self.source_mask = self.rough_mask.copy()
@@ -359,7 +359,10 @@ class Machine(object):
                 .multiply(1 / self.source_flux_estimates[:, None])
                 .data
             )
-            rbins = np.linspace(0, self.r.data.max(), 100)
+            if sparse.issparse(self.r):
+                rbins = np.linspace(0, self.r.data.max(), 100)
+            else:
+                rbins = np.linspace(0, self.r.value.max(), 100)
             masks = np.asarray(
                 [
                     (r > rbins[idx]) & (r <= rbins[idx + 1])
@@ -380,7 +383,7 @@ class Machine(object):
                     mean_model.multiply(self.source_flux_estimates[:, None])
                 ) > source_flux_limit
             else:
-                mean_model = 10 ** np.polyval(l, self.r)
+                mean_model = 10 ** np.polyval(l, self.r.value)
                 self.source_mask = (
                     sparse.csr_matrix(mean_model * self.source_flux_estimates[:, None])
                     > source_flux_limit
@@ -393,10 +396,18 @@ class Machine(object):
         self.radius[self.radius < self.pixel_scale.value] = (
             self.pixel_scale.value * 1.25
         )
-        self.source_mask = sparse_lessthan(self.r, self.radius)
+        if sparse.issparse(self.r):
+            self.source_mask = sparse_lessthan(self.r, self.radius)
+        else:
+            self.source_mask = sparse.csr_matrix(self.r.value < self.radius[:, None])
         self._get_uncontaminated_pixel_mask()
 
         if plot:
+            if sparse.issparse(self.r):
+                rdata = self.r.data
+            else:
+                rdata = self.r.value
+
             fig, ax = plt.subplots(1, 3, figsize=(15, 3))
 
             ax[0].set_title("All Sources Radius")
@@ -404,7 +415,7 @@ class Machine(object):
                 r, 10**max_f, s=2, alpha=0.5, label="Pixel data", rasterized=True
             )
             ax[0].scatter(
-                self.r.data, mean_model.data, s=2, label="Mean Model", rasterized=True
+                rdata, mean_model.data, s=2, label="Mean Model", rasterized=True
             )
             ax[0].legend(loc="upper right")
             ax[0].set_xlim(rbins[k].min() - 0.04, rbins[k].max() + 0.04)
@@ -421,7 +432,7 @@ class Machine(object):
 
             ax[2].set_title("Evaluated Source Radius")
             ax[2].scatter(
-                self.r.data,
+                rdata,
                 mean_model.multiply(self.source_flux_estimates[:, None]).data,
                 s=1,
                 alpha=0.6,
@@ -464,7 +475,10 @@ class Machine(object):
         self._update_delta_arrays(frame_index=frame_index)
 
         # update the source mask and uncontaminated pixels
-        self.source_mask = sparse_lessthan(self.r, self.radius)
+        if sparse.issparse(self.r):
+            self.source_mask = sparse_lessthan(self.r, self.radius)
+        else:
+            self.source_mask = sparse.csr_matrix(self.r.value < self.radius[:, None])
         self._get_uncontaminated_pixel_mask()
 
         return
