@@ -196,8 +196,8 @@ class Machine(object):
 
     def __repr__(self):
         return f"Machine (N sources, N times, N pixels): {self.shape}"
-    
-    def pixel_coordinates(self, frame_index: int=0):
+
+    def pixel_coordinates(self, frame_index: int = 0):
         COL, ROW = (
             self.WCSs[frame_index]
             .all_world2pix(self.sources.loc[:, ["ra", "dec"]].values, 0.0)
@@ -214,10 +214,10 @@ class Machine(object):
         rame_index : list or str
             Framce index used for ra and dec coordinate grid
         """
-        # Hardcoded: sparse implementation is efficient when nsourxes * npixels < 1e7
+        # Hardcoded: sparse implementation is efficient when nsourxes * npixels < 2e5
         # (JMP profile this)
         # https://github.com/SSDataLab/psfmachine/pull/17#issuecomment-866382898
-        if self.nsources * self.npixels < 1e7:
+        if self.nsources * self.npixels < 2e5:
             self._updated_delta_numpy_arrays(frame_index=frame_index)
         else:
             self._update_delta_sparse_arrays(frame_index=frame_index)
@@ -405,8 +405,12 @@ class Machine(object):
         if plot:
             if sparse.issparse(self.r):
                 rdata = self.r.data
+                mmdata = mean_model.data
+                mmdata2 = mean_model.multiply(self.source_flux_estimates[:, None]).data
             else:
-                rdata = self.r.value
+                rdata = self.r.value.ravel()
+                mmdata = mean_model.ravel()
+                mmdata2 = (mean_model * self.source_flux_estimates[:, None]).ravel()
 
             fig, ax = plt.subplots(1, 3, figsize=(15, 3))
 
@@ -415,7 +419,7 @@ class Machine(object):
                 r, 10**max_f, s=2, alpha=0.5, label="Pixel data", rasterized=True
             )
             ax[0].scatter(
-                rdata, mean_model.data, s=2, label="Mean Model", rasterized=True
+                rdata, mmdata, s=2, label="Mean Model", rasterized=True
             )
             ax[0].legend(loc="upper right")
             ax[0].set_xlim(rbins[k].min() - 0.04, rbins[k].max() + 0.04)
@@ -433,7 +437,7 @@ class Machine(object):
             ax[2].set_title("Evaluated Source Radius")
             ax[2].scatter(
                 rdata,
-                mean_model.multiply(self.source_flux_estimates[:, None]).data,
+                mmdata2,
                 s=1,
                 alpha=0.6,
                 label="Evaluated pixel flux",
@@ -452,8 +456,8 @@ class Machine(object):
             ax[2].set_ylim(0.1, 1e4)
             ax[2].set_xlabel("r [arcsec]")
             ax[2].set_ylabel("Flux [e-/s]")
-
-            plt.show()
+            
+            return fig
         return
 
     def _update_source_mask(self, frame_index: int = 0, source_flux_limit: float = 1):
@@ -1169,7 +1173,7 @@ class Machine(object):
             self.ws[tdx], self.werrs[tdx] = solve_linear_model(
                 X,
                 self.flux[tdx],
-                # y_err=self.flux_err[tdx],
+                y_err=self.flux_err[tdx],
                 prior_mu=prior_mu,
                 prior_sigma=prior_sigma,
                 errors=True,

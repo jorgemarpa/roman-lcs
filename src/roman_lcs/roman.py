@@ -156,7 +156,7 @@ class RomanMachine(Machine):
     def from_file(
         fname,
         cutout_size=None,
-        cutout_origin=[0, 0],
+        cutout_origin=(0, 0),
         sources=None,
         **kwargs,
     ):
@@ -330,13 +330,14 @@ class RomanMachine(Machine):
         Adapted version of `machine._get_source_mask()` that masks out saturated and
         bright halo pixels in FFIs. See parameter descriptions in `Machine`.
         """
-        super()._get_source_mask(
+        fig = super()._get_source_mask(
             source_flux_limit=source_flux_limit,
             reference_frame=reference_frame,
             iterations=iterations,
             plot=plot,
         )
         # self._remove_bad_pixels_from_source_mask()
+        return fig
 
     def _update_source_mask(self, frame_index: int = 0, source_flux_limit: float = 1):
         super()._update_source_mask(
@@ -654,17 +655,20 @@ class RomanMachine(Machine):
             Matlotlib axis with the figure.
         """
         if ax is None:
-            plt.figure(figsize=(10, 10))
+            fig = plt.figure(figsize=(10, 10))
             ax = plt.subplot(projection=self.WCSs[frame_index], label="overlays")
 
         norm = simple_norm(self.flux[frame_index].ravel(), "asinh", percent=95)
 
-        bar = ax.imshow(
+        bar = ax.pcolormesh(
+            self.column_2d,
+            self.row_2d,
             self.flux_2d[frame_index],
             norm=norm,
             cmap=plt.cm.viridis,
-            origin="lower",
+            # origin="lower",
             rasterized=True,
+            # extent=extent,
         )
         plt.colorbar(bar, ax=ax, shrink=0.7, label=r"Flux ($e^{-}s^{-1}$)")
         ax.grid(True, which="major", axis="both", ls="-", color="w", alpha=0.7)
@@ -678,7 +682,7 @@ class RomanMachine(Machine):
             f"Frame {frame_index} | JD {self.time[frame_index]} "
         )
 
-        pix_coord = (
+        srow, scol = (
             self.WCSs[frame_index]
             .all_world2pix(self.sources.loc[:, ["ra", "dec"]].values, 0.0)
             .T
@@ -686,8 +690,8 @@ class RomanMachine(Machine):
 
         if sources:
             ax.scatter(
-                pix_coord[0],
-                pix_coord[1],
+                scol,
+                srow,
                 c="tab:red",
                 facecolors="none",
                 marker="o",
@@ -698,7 +702,7 @@ class RomanMachine(Machine):
 
         ax.set_aspect("equal", adjustable="box")
 
-        return ax
+        return fig
 
     def plot_pixel_masks(self, ax=None):
         """
@@ -779,7 +783,7 @@ class RomanMachine(Machine):
 def _load_file(
     fname: list,
     cutout_size: Optional[int]=None,
-    cutout_origin: Optional[list]=[0, 0],
+    cutout_origin: Optional[tuple]=(0, 0),
 ):
     """
     Helper function to load FFI files and parse data. It parses the FITS files to
@@ -793,7 +797,7 @@ def _load_file(
     cutout_size: int
         Size of (square) portion of FFIs to cut out
     cutout_origin: tuple
-        Coordinates of the origin of the cut out
+        Coordinates of the origin of the cut out (row, column)
 
     Returns
     -------
@@ -842,14 +846,16 @@ def _load_file(
     if cutout_size is not None:
         rmax = np.min([rmin + cutout_size, rmax])
         cmax = np.min([cmin + cutout_size, cmax])
+    print(rmin, rmax)
+    print(cmin, cmax)
 
     for k, f in tqdm(enumerate(fname), total=len(fname)):
         if not os.path.isfile(f):
             raise FileNotFoundError("FFI calibrated fits file does not exist: ", f)
         aux = fitsio.FITS(f)
 
-        flux.append(aux[0][rmin:rmax, cmin:cmax].T)
-        flux_err.append(aux[1][rmin:rmax, cmin:cmax].T)
+        flux.append(aux[0][rmin:rmax, cmin:cmax])
+        flux_err.append(aux[1][rmin:rmax, cmin:cmax])
 
         times.append((aux[0].read_header()["TEND"] + aux[0].read_header()["TSTART"]) / 2)
         quality_mask.append(0)
@@ -857,10 +863,14 @@ def _load_file(
 
         dims = flux[-1].shape
         if k == 0:
-            row_2d, col_2d = np.mgrid[0 : dims[0], 0 : dims[1]]
+            row_2d, col_2d = np.mgrid[rmin:rmax, cmin:cmax]
         wcss.append(WCS(aux[0].read_header()))
         radec = (
-            wcss[-1].all_pix2world(np.array([col_2d.ravel(), row_2d.ravel()]).T, 0.0).T
+            wcss[-1]
+            .all_pix2world(
+                np.array([row_2d.ravel(), col_2d.ravel()]).T, 0.0, ra_dec_order=True
+            )
+            .T
         )
         ra_3d.append(radec[0].reshape(dims))
         dec_3d.append(radec[1].reshape(dims))
