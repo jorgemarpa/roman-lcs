@@ -5,3 +5,5 @@ notebooks
 notebooks/.ipynb_checkpoints
 .ruff_cache
 src/roman_lcs/__pycache__
+data/prf_models/
+data/figures/

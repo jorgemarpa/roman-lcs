@@ -846,8 +846,6 @@ def _load_file(
     if cutout_size is not None:
         rmax = np.min([rmin + cutout_size, rmax])
         cmax = np.min([cmin + cutout_size, cmax])
-    print(rmin, rmax)
-    print(cmin, cmax)
 
     for k, f in tqdm(enumerate(fname), total=len(fname)):
         if not os.path.isfile(f):

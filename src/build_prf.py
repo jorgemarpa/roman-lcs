@@ -155,7 +155,7 @@ def build_prf(
     fname = (
         f"{OUTPATH}/prf_models/roman_WFI_{mac.meta['READMODE']}_{mac.meta['FILTER']}"
         f"_{mac.meta['FIELD']}_{mac.meta['DETECTOR']}_shape_model_cad{0}"
-        f"_xo{cutout_origin[0]}-yo{cutout_origin[1]}_s{cutout_size}.fits"
+        f"_row{cutout_origin[0]}-col{cutout_origin[1]}_size{cutout_size}.fits"
     )
     mac.save_shape_model(output=fname)
     print(f"Saving PRF file to \n{fname}")

@@ -2,7 +2,6 @@
 Defines the main Machine object that fit a mean PRF model to sources
 """
 
-import logging
 from typing import Optional, Union
 
 import astropy.units as u
@@ -18,7 +17,6 @@ from . import __version__
 from .utils import (
     _find_uncontaminated_pixels,
     _make_A_polar,
-    bspline_smooth,
     solve_linear_model,
     sparse_lessthan,
     threshold_bin,
@@ -198,7 +196,7 @@ class Machine(object):
         return f"Machine (N sources, N times, N pixels): {self.shape}"
 
     def pixel_coordinates(self, frame_index: int = 0):
-        COL, ROW = (
+        ROW, COL = (
             self.WCSs[frame_index]
             .all_world2pix(self.sources.loc[:, ["ra", "dec"]].values, 0.0)
             .T
@@ -1170,14 +1168,25 @@ class Machine(object):
             # B += prior_mu / (prior_sigma**2)
             # self.ws[tdx] = np.linalg.solve(sigma_w_inv, np.nan_to_num(B))
             # self.werrs[tdx] = np.linalg.inv(sigma_w_inv).diagonal() ** 0.5
-            self.ws[tdx], self.werrs[tdx] = solve_linear_model(
-                X,
-                self.flux[tdx],
-                y_err=self.flux_err[tdx],
-                prior_mu=prior_mu,
-                prior_sigma=prior_sigma,
-                errors=True,
-            )
+            try:
+                self.ws[tdx], self.werrs[tdx] = solve_linear_model(
+                    X,
+                    self.flux[tdx],
+                    y_err=self.flux_err[tdx],
+                    prior_mu=prior_mu,
+                    prior_sigma=prior_sigma,
+                    errors=True,
+                )
+            except np.linalg.LinAlgError:
+                print("WARNING: matrix is singular, trying without errors, this could lead to nans")
+                self.ws[tdx], self.werrs[tdx] = solve_linear_model(
+                    X,
+                    self.flux[tdx],
+                    # y_err=self.flux_err[tdx],
+                    prior_mu=prior_mu,
+                    prior_sigma=prior_sigma,
+                    errors=True,
+                )
             self.model_flux[tdx] = X.dot(self.ws[tdx])
 
         # check bad estimates
