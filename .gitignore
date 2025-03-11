@@ -8,3 +8,7 @@ src/roman_lcs/__pycache__
 data/prf_models/
 data/figures/
 data/.DS_Store
+data/lcs
+data/lcs_v2
+data/*.tar.gz
+data/tmp

@@ -10,6 +10,7 @@ from matplotlib.backends.backend_pdf import FigureCanvasPdf, PdfPages
 from roman_lcs import RomanMachine
 
 PATH = "/Users/jimartin/Work/ROMAN/TRExS/simulations/dryrun_01"
+# PATH = "/Volumes/seagate_exhd/trexs/DryRun_01"
 
 ZP = {'F087': 26.29818407774948,
 'F146': 27.577660642304814,
@@ -87,13 +88,13 @@ def build_prf(
 
     ff = sorted(
         glob(
-            f"{PATH}/imgs/{FILTER}/rimtimsim_WFI_lvl02_{FILTER}_SCA02_field{FIELD:02}_rampfitted_exposureno_*_sim.fits"
+            f"{PATH}/simulated_image_data/rimtimsim_WFI_lvl02_{FILTER}_SCA02_field{FIELD:02}_rampfitted_exposureno_*_sim.fits"
         )
     )
     print(f"Total files for Field {FIELD} Filter {FILTER} in folder: {len(ff)}.")
 
     catalog = pd.read_csv(
-        f"{PATH}/TRExS_dryrun_01_MASTER_input_catalog_v1.1.txt", index_col=0
+        f"{PATH}/metadata/TRExS_dryrun_01_MASTER_input_catalog_v1.1.txt", index_col=0
     )
     catalog["flux"] = 10 ** ((ZP[FILTER] - catalog[FILTER]) / 2.5)
     catalog["flux_err"] = np.sqrt(catalog["flux"])

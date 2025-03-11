@@ -1124,7 +1124,7 @@ class Machine(object):
 
         return fig
 
-    def fit_model(self):
+    def fit_model(self, prior_mu=None, prior_sigma=None):
         """
         Finds the best fitting weights for every source, simultaneously
 
@@ -1135,16 +1135,19 @@ class Machine(object):
             model has to be built previously with `build_time_model`.
         """
 
-        prior_mu = self.source_flux_estimates  # np.zeros(A.shape[1])
-        prior_sigma = (
-            np.ones(self.mean_model.shape[0])
-            * 5
-            * np.abs(self.source_flux_estimates) ** 0.5
-        )
+        if prior_mu is None:
+            prior_mu = self.source_flux_estimates  # np.zeros(A.shape[1])
+        if prior_sigma is None:
+            prior_sigma = (
+                np.ones(self.mean_model.shape[0])
+                * 5
+                * np.abs(self.source_flux_estimates) ** 0.5
+            )
 
         self.model_flux = np.zeros(self.flux.shape) * np.nan
         self.ws = np.zeros((self.nt, self.mean_model.shape[0]))
         self.werrs = np.zeros((self.nt, self.mean_model.shape[0]))
+        self.fit_quality = np.zeros(self.nt)
 
         for tdx in tqdm(
             range(self.nt),
@@ -1159,15 +1162,6 @@ class Machine(object):
             )
             X = self.mean_model.copy()
             X = X.T
-
-            # sigma_w_inv = X.T.dot(
-            #     X.multiply(1 / 1 ** 2)
-            # ).toarray()
-            # sigma_w_inv += np.diag(1 / (prior_sigma**2))
-            # B = X.T.dot((self.flux[tdx] / 1 ** 2))
-            # B += prior_mu / (prior_sigma**2)
-            # self.ws[tdx] = np.linalg.solve(sigma_w_inv, np.nan_to_num(B))
-            # self.werrs[tdx] = np.linalg.inv(sigma_w_inv).diagonal() ** 0.5
             try:
                 self.ws[tdx], self.werrs[tdx] = solve_linear_model(
                     X,
@@ -1176,6 +1170,7 @@ class Machine(object):
                     prior_mu=prior_mu,
                     prior_sigma=prior_sigma,
                     errors=True,
+                    nnls=False,
                 )
             except np.linalg.LinAlgError:
                 print("WARNING: matrix is singular, trying without errors, this could lead to nans")
@@ -1186,7 +1181,9 @@ class Machine(object):
                     prior_mu=prior_mu,
                     prior_sigma=prior_sigma,
                     errors=True,
+                    nnls=False,
                 )
+                self.fit_quality[tdx] = 1
             self.model_flux[tdx] = X.dot(self.ws[tdx])
 
         # check bad estimates
