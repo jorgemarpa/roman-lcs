@@ -11,3 +11,5 @@ data/lcs
 data/lcs_v2
 data/prf_models/*.tar.gz
 data/tmp
+data/roman_wfi_dryrun01_lcs_v01.tar.gz
+.DS_Store
