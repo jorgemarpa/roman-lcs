@@ -5,4 +5,11 @@ notebooks
 notebooks/.ipynb_checkpoints
 .ruff_cache
 src/roman_lcs/__pycache__
-notebooks/roman_psfmachine_test.ipynb
+data/figures/
+data/.DS_Store
+data/lcs
+data/lcs_v2
+data/prf_models/*.tar.gz
+data/tmp
+data/roman_wfi_dryrun01_lcs_v01.tar.gz
+.DS_Store

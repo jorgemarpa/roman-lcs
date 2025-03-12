@@ -1,12 +1,21 @@
 """Collection of utility functions"""
 
+import datetime
+import os
+import warnings
 from typing import Optional, Tuple, Union
 
+import astropy.units as u
 import numpy as np
 import numpy.typing as npt
+from astropy.io import fits
 from patsy import dmatrix
 from scipy import sparse
+from scipy import optimize
 
+from . import PACKAGEDIR, __version__
+
+warnings.simplefilter("ignore", sparse.SparseEfficiencyWarning)
 
 def _make_A_polar(
     phi: npt.ArrayLike,
@@ -235,6 +244,7 @@ def solve_linear_model(
     prior_sigma: Optional[float] = None,
     k: Optional[npt.ArrayLike] = None,
     errors: bool = False,
+    nnls: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Solves a linear model with design matrix A and observations y:
@@ -295,7 +305,11 @@ def solve_linear_model(
     if isinstance(sigma_w_inv, np.matrix):
         sigma_w_inv = np.asarray(sigma_w_inv)
 
-    w = np.linalg.solve(sigma_w_inv, B)
+    if nnls:
+        w, _ = optimize.nnls(sigma_w_inv, B,)
+    else:
+        # w, _, _, _ = np.linalg.lstsq(sigma_w_inv, B)
+        w = np.linalg.solve(sigma_w_inv, B)
     if errors is True:
         w_err = np.linalg.inv(sigma_w_inv).diagonal() ** 0.5
         return w, w_err
@@ -669,3 +683,160 @@ def bspline_smooth(
         )
         y_smooth.append(DM.dot(weights))
     return np.array(y_smooth)
+
+
+def _find_uncontaminated_pixels(mask):
+    """
+    creates a mask of shape nsources x npixels where targets are not contaminated.
+    This mask is used to select pixels to build the PSF model.
+    """
+
+    new_mask = mask.multiply(np.asarray(mask.sum(axis=0) == 1)[0]).tocsr()
+    new_mask.eliminate_zeros()
+    return new_mask
+
+
+def to_fits(data, path=None, overwrite=False, **extra_data):
+    """Converts the light curve to a FITS file in the Kepler/TESS file format.
+
+    The FITS file will be returned as a `~astropy.io.fits.HDUList` object.
+    If a `path` is specified then the file will also be written to disk.
+
+    Parameters
+    ----------
+    data : dict
+        Lightcurve data, time, flux, and flux_err
+    path : str or None
+        Location where the FITS file will be written, which is optional.
+    overwrite : bool
+        Whether or not to overwrite the file, if `path` is set.
+    extra_data : dict
+        Extra keywords or columns to include in the FITS file.
+        Arguments of type str, int, float, or bool will be stored as
+        keywords in the primary header.
+        Arguments of type np.array or list will be stored as columns
+        in the first extension.
+
+    Returns
+    -------
+    hdu : `~astropy.io.fits.HDUList`
+        Returns an `~astropy.io.fits.HDUList` object.
+    """
+    typedir = {
+        int: "J",
+        str: "A",
+        float: "D",
+        bool: "L",
+        np.int16: "J",
+        np.int32: "K",
+        np.float32: "E",
+        np.float64: "D",
+    }
+
+    def _header_template(extension):
+        """Returns a template `fits.Header` object for a given extension."""
+        template_fn = os.path.join(
+            os.path.dirname(os.path.dirname(PACKAGEDIR)), 
+            "data", 
+            "templates", f"lc-ext{extension}-header.txt"
+        )
+        return fits.Header.fromtextfile(template_fn)
+
+    def _make_primary_hdu(extra_data=None):
+        """Returns the primary extension (#0)."""
+        if extra_data is None:
+            extra_data = {}
+        hdu = fits.PrimaryHDU()
+        # Copy the default keywords from a template file from the MAST archive
+        tmpl = _header_template(0)
+        for kw in tmpl:
+            hdu.header[kw] = (tmpl[kw], tmpl.comments[kw])
+
+        # Override the defaults where necessary
+        default = {
+            "ORIGIN": "Unofficial data product",
+            "DATE": datetime.datetime.now().strftime("%Y-%m-%d"),
+            "CREATOR": "trexs-roman-lcs.to_fits()",
+            "PROCVER": str(__version__),
+        }
+
+        for kw in default:
+            hdu.header["{}".format(kw).upper()] = default[kw]
+            if default[kw] is None:
+                print("Value for {} is None.".format(kw))
+
+        for kw in extra_data:
+            if isinstance(extra_data[kw], (str, float, int, bool, type(None))):
+                hdu.header["{}".format(kw).upper()] = extra_data[kw]
+                if extra_data[kw] is None:
+                    print("Value for {} is None.".format(kw))
+        return hdu
+
+    def _make_lightcurve_extension(data, extra_data=None):
+        """Create the 'LIGHTCURVE' extension (i.e. extension #1)."""
+        # Turn the data arrays into fits columns and initialize the HDU
+        if extra_data is None:
+            extra_data = {}
+        cols = []
+        if "time" in data.keys():
+            cols.append(
+                fits.Column(
+                    name="TIME",
+                    format="D",
+                    unit=u.day.to_string(),
+                    array=data["time"],
+                )
+            )
+        if "flux" in data.keys():
+            cols.append(
+                fits.Column(
+                    name="FLUX",
+                    format="E",
+                    unit=(u.electron / u.second).to_string(),
+                    array=data["flux"],
+                )
+            )
+        if "flux_err" in data.keys():
+            cols.append(
+                fits.Column(
+                    name="FLUX_ERR",
+                    format="E",
+                    unit=(u.electron / u.second).to_string(),
+                    array=data["flux_err"],
+                )
+            )
+        if "cadenceno" in data.keys():
+            cols.append(
+                fits.Column(name="CADENCENO", format="J", array=data["cadenceno"])
+            )
+        if "quality" in data.keys():
+            cols.append(fits.Column(name="QUALITY", format="J", array=data["quality"]))
+        for kw in extra_data:
+            if isinstance(extra_data[kw], (np.ndarray, list)):
+                cols.append(
+                    fits.Column(
+                        name="{}".format(kw).upper(),
+                        format=typedir[extra_data[kw].dtype.type],
+                        array=extra_data[kw],
+                    )
+                )
+
+        coldefs = fits.ColDefs(cols)
+        hdu = fits.BinTableHDU.from_columns(coldefs)
+        hdu.header["EXTNAME"] = "LIGHTCURVE"
+        return hdu
+
+    def _hdulist(data, **extra_data):
+        """Returns an astropy.io.fits.HDUList object."""
+        list_out = fits.HDUList(
+            [
+                _make_primary_hdu(extra_data=extra_data),
+                _make_lightcurve_extension(data, extra_data=extra_data),
+            ]
+        )
+        return list_out
+
+    hdu = _hdulist(data, **extra_data)
+    if path is not None:
+        hdu.writeto(path, overwrite=overwrite, checksum=True)
+    return hdu
