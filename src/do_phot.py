@@ -41,7 +41,7 @@ def do_photometry(
             f"{PATH}/simulated_image_data/rimtimsim_WFI_lvl02_{FILTER}_SCA02_field{FIELD:02}_rampfitted_exposureno_*_sim.fits"
         )
     )
-    if False:
+    if True:
         parPATH = "/Volumes/TRExS/dryrun01/"
         ffp = sorted(
             glob(
@@ -83,14 +83,14 @@ def do_photometry(
         sys.exit()
 
     # we check for missing light curves in the archive as listed in a file with the ids
-    missing_ids = np.loadtxt(
-        f"/Users/jimartin/Work/ROMAN/TRExS/Roman-lcs/src/{FILTER}_missing_ids.txt"
-    )
-    total_missing = np.isin(sources["sicbro_id"].values, missing_ids).sum()
-    print(f"Missing {total_missing} targets in archive")
-    if total_missing == 0:
-        print("No missing transit targets in this cutout, exiting...")
-        sys.exit()
+    # missing_ids = np.loadtxt(
+    #     f"/Users/jimartin/Work/ROMAN/TRExS/Roman-lcs/src/{FILTER}_missing_ids.txt"
+    # )
+    # total_missing = np.isin(sources["sicbro_id"].values, missing_ids).sum()
+    # print(f"Missing {total_missing} targets in archive")
+    # if total_missing == 0:
+    #     print("No missing transit targets in this cutout, exiting...")
+    #     sys.exit()
 
     # start Machine object
     mac = RomanMachine.from_file(
