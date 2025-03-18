@@ -41,7 +41,7 @@ def do_photometry(
             f"{PATH}/simulated_image_data/rimtimsim_WFI_lvl02_{FILTER}_SCA02_field{FIELD:02}_rampfitted_exposureno_*_sim.fits"
         )
     )
-    if False:
+    if True:
         parPATH = "/Volumes/TRExS/dryrun01/"
         ffp = sorted(
             glob(
