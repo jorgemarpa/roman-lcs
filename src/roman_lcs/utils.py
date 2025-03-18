@@ -245,6 +245,7 @@ def solve_linear_model(
     k: Optional[npt.ArrayLike] = None,
     errors: bool = False,
     nnls: bool = False,
+    use_gpu: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Solves a linear model with design matrix A and observations y:
@@ -305,11 +306,18 @@ def solve_linear_model(
     if isinstance(sigma_w_inv, np.matrix):
         sigma_w_inv = np.asarray(sigma_w_inv)
 
-    if nnls:
-        w, _ = optimize.nnls(sigma_w_inv, B,)
+    if use_gpu:
+        import tensorflow as tf
+
+        if not tf.config.list_physical_devices('GPU'):
+            print("WARNING: no GPU available, turn off `use_gpu`.")
+        w = tf.linalg.solve(sigma_w_inv, B[:, None]).numpy().ravel()
     else:
-        # w, _, _, _ = np.linalg.lstsq(sigma_w_inv, B)
-        w = np.linalg.solve(sigma_w_inv, B)
+        if nnls:
+            w, _ = optimize.nnls(sigma_w_inv, B)
+        else:
+            # w, _, _, _ = np.linalg.lstsq(sigma_w_inv, B)
+            w = np.linalg.solve(sigma_w_inv, B)
     if errors is True:
         w_err = np.linalg.inv(sigma_w_inv).diagonal() ** 0.5
         return w, w_err

@@ -33,6 +33,7 @@ def do_photometry(
     cutout_origin: tuple = (0, 0),
     target: Optional[Union[int, str]] = None,
     nthreads: int = 3,
+    use_gpu: bool = False,
 ):
 
     # get list of FITS file paths to load into Machine
@@ -162,10 +163,10 @@ def do_photometry(
                 np.ones(mac.nsources) * 1 * np.abs(mac.source_flux_estimates) ** 0.5
             )
             prior_sigma[transit_idx] *= 5
-            mac.fit_model(prior_mu=prior_mu, prior_sigma=prior_sigma)
+            mac.fit_model(prior_mu=prior_mu, prior_sigma=prior_sigma, use_gpu=use_gpu)
         # or we fit for all sources with no constrains
         else:
-            mac.fit_model()
+            mac.fit_model(use_gpu=use_gpu)
 
     # get PSF metrics
     mac.get_psf_metrics(npoints_per_pixel=0)
@@ -269,6 +270,13 @@ if __name__ == "__main__":
         default=False,
         help="Plot target light curve.",
     )
+    parser.add_argument(
+        "--use-gpu",
+        dest="use_gpu",
+        action="store_true",
+        default=False,
+        help="Enable GPU.",
+    )
 
     args = parser.parse_args()
 
@@ -279,5 +287,6 @@ if __name__ == "__main__":
         cutout_size=args.cutout_size,
         plot=args.plot,
         cutout_origin=(args.row0, args.col0),
-        target=args.target
+        target=args.target,
+        use_gpu=args.use_gpu,
     )

@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
+import tensorflow as tf
 from astropy.stats import sigma_clip
 from scipy import sparse, stats
 from tqdm import tqdm
@@ -1124,7 +1125,7 @@ class Machine(object):
 
         return fig
 
-    def fit_model(self, prior_mu=None, prior_sigma=None):
+    def fit_model(self, prior_mu=None, prior_sigma=None, use_gpu=False):
         """
         Finds the best fitting weights for every source, simultaneously
 
@@ -1171,9 +1172,24 @@ class Machine(object):
                     prior_sigma=prior_sigma,
                     errors=True,
                     nnls=False,
+                    use_gpu=use_gpu,
                 )
+            except tf.errors.InvalidArgumentError:
+                self.ws[tdx], self.werrs[tdx] = solve_linear_model(
+                    X,
+                    self.flux[tdx],
+                    # y_err=self.flux_err[tdx],
+                    prior_mu=prior_mu,
+                    prior_sigma=prior_sigma,
+                    errors=True,
+                    nnls=False,
+                    use_gpu=use_gpu,
+                )
+
             except np.linalg.LinAlgError:
-                print("WARNING: matrix is singular, trying without errors, this could lead to nans")
+                print(
+                    "WARNING: matrix is singular, trying without errors, this could lead to nans"
+                )
                 self.ws[tdx], self.werrs[tdx] = solve_linear_model(
                     X,
                     self.flux[tdx],
