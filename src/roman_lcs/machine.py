@@ -1124,7 +1124,7 @@ class Machine(object):
 
         return fig
 
-    def fit_model(self, prior_mu=None, prior_sigma=None):
+    def fit_model(self, prior_mu=None, prior_sigma=None, compute_model=False):
         """
         Finds the best fitting weights for every source, simultaneously
 
@@ -1144,7 +1144,8 @@ class Machine(object):
                 * np.abs(self.source_flux_estimates) ** 0.5
             )
 
-        self.model_flux = np.zeros(self.flux.shape) * np.nan
+        # if compute_model:
+        #     self.model_flux = np.zeros(self.flux.shape) * np.nan
         self.ws = np.zeros((self.nt, self.mean_model.shape[0]))
         self.werrs = np.zeros((self.nt, self.mean_model.shape[0]))
         self.fit_quality = np.zeros(self.nt)
@@ -1184,7 +1185,8 @@ class Machine(object):
                     nnls=False,
                 )
                 self.fit_quality[tdx] = 1
-            self.model_flux[tdx] = X.dot(self.ws[tdx])
+            # if compute_model:
+            #     self.model_flux[tdx] = X.dot(self.ws[tdx])
 
         # check bad estimates
         nodata = np.asarray(self.mean_model.sum(axis=1))[:, 0] == 0

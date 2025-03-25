@@ -316,6 +316,9 @@ class RomanMachine(Machine):
         return mask
 
     def _pointing_offset(self):
+        """
+        Computes pointing offsets due to dittering
+        """
         self.ra_offset = (self.ra - self.ra[0]).mean(axis=1)
         self.dec_offset = (self.dec - self.dec[0]).mean(axis=1)
 
@@ -344,6 +347,10 @@ class RomanMachine(Machine):
             frame_index=frame_index,
             source_flux_limit=source_flux_limit,
         )
+        """
+        Adapted version of `machine._update_source_mask()` that masks out saturated and
+        bright halo pixels in FFIs. See parameter descriptions in `Machine`.
+        """
         # self._remove_bad_pixels_from_source_mask()
 
     def _remove_bad_pixels_from_source_mask(self):

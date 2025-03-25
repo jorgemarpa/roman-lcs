@@ -52,6 +52,7 @@ def do_photometry(
         ff = np.unique(ff).tolist()
     print(f"Total files for Field {FIELD} Filter {FILTER} in folder: {len(ff)}.")
 
+    # load surce catalogs in the cutout
     with sqlite3.connect(f"{PATH}/metadata/TRExS_dryrun_01_MASTER_input_catalog_v1.1.db") as conn:
         query = (
             f"F146 <= {mag_limit} and "
@@ -154,7 +155,7 @@ def do_photometry(
             # if not in catalog fit all sources
             else:
                 mac.fit_model()
-        # or we fit for specific transit hosts in the catalog...
+        # or we fit for transit hosts in the catalog...
         elif target == "transits":
             transit_idx = mac.sources.query("transitHost == 1").index.values
             prior_mu = mac.source_flux_estimates
@@ -184,10 +185,7 @@ def do_photometry(
         metadata[f"{FILTER}FLX"] = np.round(mac.sources["flux"].iloc[k], decimals=3)
         metadata["PSFFRAC"] = np.round(mac.source_psf_fraction[k], decimals=3)
 
-        # corr_flux = (mac.ws[:, k] / np.nanmedian(mac.ws[:, k])) * np.random.normal(mac.sources["flux"].iloc[k], mac.sources["flux_err"].iloc[k])
-
         # replace nans and negatives with 0
-
         quality = np.zeros(mac.nt, dtype=int)
         cadenceno = np.arange(mac.nt, dtype=int)
         flux = mac.ws[:, k]
