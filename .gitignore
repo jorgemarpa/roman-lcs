@@ -6,7 +6,8 @@ notebooks/data
 notebooks/.ipynb_checkpoints
 .ruff_cache
 src/roman_lcs/__pycache__
-data/figures/
+data/figures/eval_phot
+data/figures/prf
 data/.DS_Store
 data/lcs
 data/lcs_v2
