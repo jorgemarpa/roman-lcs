@@ -533,8 +533,8 @@ class Machine(object):
         flux_cut_off: float
             the flux in COUNTS at which to stop evaluating the model!
         frame_index : string or int
-            The frame index used to build the shape model, if "mean" then use the
-            mean value across time
+            The frame index used to build the shape model. If "mean" then use the
+            mean value across time, this won't work if images are dittered
         bin_data : boolean
             Bin flux data spatially to increase SNR before fitting the shape model
         plot : boolean
@@ -1108,14 +1108,14 @@ class Machine(object):
         ax[-1, 0].set(
             xlabel=r'$\delta x$ ["]',
             ylabel=r'$\delta y$ ["]',
-            title="Residuals",
+            title="Model",
             xlim=(-radius, radius),
             ylim=(-radius, radius),
         )
         ax[-1, 1].set(
             xlabel=r"$\phi$ [$^\circ$]",
             ylabel='$r$ ["]',
-            title="Residuals",
+            title="Model",
             ylim=(0, radius),
             yticks=np.linspace(0, radius, 5, dtype=int),
         )
