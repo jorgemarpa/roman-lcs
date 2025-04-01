@@ -10,14 +10,16 @@ import pandas as pd
 from matplotlib.backends.backend_pdf import FigureCanvasPdf, PdfPages
 from threadpoolctl import threadpool_limits
 from tqdm import tqdm
+from astropy.coordinates import SkyCoord
+import astropy.units as u
 
 from roman_lcs import RomanMachine
 from roman_lcs.utils import to_fits
 
 # from .build_prf import plot_image_and_mask
 
-PATH = "/Users/jimartin/Work/ROMAN/TRExS/simulations/dryrun_01"
-# PATH = "/Volumes/seagate_exhd/trexs/DryRun_01"
+# PATH = "/Users/jimartin/Work/ROMAN/TRExS/simulations/dryrun_01"
+PATH = "/Volumes/JorgeMarpa-2T/trexs/dryrun_01/"
 
 ZP = {'F087': 26.29818407774948,
 'F146': 27.577660642304814,
@@ -33,6 +35,7 @@ def do_photometry(
     cutout_origin: tuple = (0, 0),
     target: Optional[Union[int, str]] = None,
     nthreads: int = 3,
+    blend_limit : Optional[float] = None,
 ):
 
     # get list of FITS file paths to load into Machine
@@ -41,7 +44,7 @@ def do_photometry(
             f"{PATH}/simulated_image_data/rimtimsim_WFI_lvl02_{FILTER}_SCA02_field{FIELD:02}_rampfitted_exposureno_*_sim.fits"
         )
     )
-    if True:
+    if False:
         parPATH = "/Volumes/TRExS/dryrun01/"
         ffp = sorted(
             glob(
@@ -61,7 +64,7 @@ def do_photometry(
         )
         sources = pd.read_sql_query(
             f"SELECT * FROM Master_input_catalog WHERE {query}", conn
-        ).reset_index(drop=False)
+        ).reset_index(drop=True)
 
     # rename columns so Machine can read the right columns
     sources = sources.rename(
@@ -74,6 +77,28 @@ def do_photometry(
             f"{FILTER}_flux_err": "flux_err",
         }
     )
+
+    # remove highly contaminated sources, faint one from < blend_limit pairs
+    if isinstance(blend_limit, float):
+        print(f"Limiting blended sources to > {blend_limit} arcsec")
+        catalog = SkyCoord(ra=sources.ra * u.degree, dec=sources.dec * u.degree)
+        idxc, idxcatalog, d2d, _ = catalog.search_around_sky(
+            catalog, blend_limit * u.arcsec
+        )
+        idxc = idxc[d2d > 0]
+        idxcatalog = idxcatalog[d2d > 0]
+        d2d = d2d[d2d > 0]
+        dropfaint = []
+        for l, r in zip(idxc, idxcatalog):
+            if sources.loc[l, "F146"] > sources.loc[r, "F146"]:
+                dropfaint.append(l)
+            else:
+                dropfaint.append(r)
+        dropfaint = np.unique(dropfaint)
+        print(f"Dropping {len(dropfaint)} faint blended sources")
+        sources.drop(dropfaint, axis=0, inplace=True)
+        sources.reset_index(drop=True, inplace=True)
+
     print(f"Total sources Mag_{FILTER} <= {mag_limit} is {len(sources)}.")
 
     # we check for transiting hosts in the source list and skip if none
@@ -84,14 +109,14 @@ def do_photometry(
         sys.exit()
 
     # we check for missing light curves in the archive as listed in a file with the ids
-    missing_ids = np.loadtxt(
-        f"/Users/jimartin/Work/ROMAN/TRExS/Roman-lcs/src/{FILTER}_missing_ids.txt"
-    )
-    total_missing = np.isin(sources["sicbro_id"].values, missing_ids).sum()
-    print(f"Missing {total_missing} targets in archive")
-    if total_missing == 0:
-        print("No missing transit targets in this cutout, exiting...")
-        sys.exit()
+        # missing_ids = np.loadtxt(
+        #     f"/Users/jimartin/Work/ROMAN/TRExS/Roman-lcs/src/{FILTER}_missing_ids.txt"
+        # )
+        # total_missing = np.isin(sources["sicbro_id"].values, missing_ids).sum()
+        # print(f"Missing {total_missing} targets in archive")
+        # if total_missing == 0:
+        #     print("No missing transit targets in this cutout, exiting...")
+        #     sys.exit()
 
     # start Machine object
     mac = RomanMachine.from_file(
@@ -261,6 +286,13 @@ if __name__ == "__main__":
         help="Object id when targetting the photometry fitting.",
     )
     parser.add_argument(
+        "--blend-limit",
+        dest="blend_limit",
+        type=float,
+        default=None,
+        help="Lower distance limit to allow blends, fainter and closer sources will be removed from input catalog.",
+    )
+    parser.add_argument(
         "--plot",
         dest="plot",
         action="store_true",
@@ -277,5 +309,6 @@ if __name__ == "__main__":
         cutout_size=args.cutout_size,
         plot=args.plot,
         cutout_origin=(args.row0, args.col0),
-        target=args.target
+        target=args.target,
+        blend_limit=args.blend_limit,
     )
