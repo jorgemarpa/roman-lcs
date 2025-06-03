@@ -963,7 +963,7 @@ class Machine(object):
                 .multiply(1 / self.source_flux_estimates[:, None])
                 .data
             )
-        elif isinstance(frame_index, int):
+        elif isinstance(frame_index, (int, np.int32, np.int64)):
             mean_f = np.log10(
                 self.uncontaminated_source_mask.astype(float)
                 .multiply(self.flux[frame_index])

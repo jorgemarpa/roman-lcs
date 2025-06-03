@@ -709,7 +709,7 @@ class RomanMachine(Machine):
 
         ax.set_aspect("equal", adjustable="box")
 
-        return fig
+        return ax
 
     def plot_pixel_masks(self, ax=None):
         """
