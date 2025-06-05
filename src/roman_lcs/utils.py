@@ -3,19 +3,20 @@
 import datetime
 import os
 import warnings
-from typing import Optional, Tuple, Union
+from typing import Any, Callable, List, Optional, Tuple, Union
 
 import astropy.units as u
 import numpy as np
 import numpy.typing as npt
-from astropy.io import fits
 from patsy import dmatrix
+import pandas as pd
+from astropy.coordinates import SkyCoord
 from scipy import sparse
-from scipy import optimize
 
 from . import PACKAGEDIR, __version__
 
 warnings.simplefilter("ignore", sparse.SparseEfficiencyWarning)
+
 
 def _make_A_polar(
     phi: npt.ArrayLike,
@@ -129,7 +130,7 @@ def _make_A_cartesian(
     y: npt.ArrayLike,
     n_knots: int = 10,
     radius: float = 3.0,
-    spacing: str = "sqrt",
+    knot_spacing_type: str = "sqrt",
 ) -> sparse.spmatrix:
     """
     Creates a design matrix (DM) in Cartersian coordinates (r, phi).
@@ -245,7 +246,7 @@ def solve_linear_model(
     k: Optional[npt.ArrayLike] = None,
     errors: bool = False,
     nnls: bool = False,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
     """
     Solves a linear model with design matrix A and observations y:
         Aw = y
@@ -306,7 +307,10 @@ def solve_linear_model(
         sigma_w_inv = np.asarray(sigma_w_inv)
 
     if nnls:
-        w, _ = optimize.nnls(sigma_w_inv, B,)
+        w, _ = optimize.nnls(
+            sigma_w_inv,
+            B,
+        )
     else:
         # w, _, _, _ = np.linalg.lstsq(sigma_w_inv, B)
         w = np.linalg.solve(sigma_w_inv, B)
@@ -365,7 +369,7 @@ def sparse_lessthan(
 
 def _combine_A(
     A: sparse.spmatrix,
-    poscorr: Optional[list] = None,
+    poscorr: Optional[List[np.ndarray]] = None,
     time: Optional[npt.ArrayLike] = None,
 ) -> sparse.spmatrix:
     """
@@ -417,8 +421,8 @@ def threshold_bin(
     z_err: Optional[npt.ArrayLike] = None,
     abs_thresh: int = 10,
     bins: int = 15,
-    statistic=np.nanmedian,
-) -> np.ndarray:
+    statistic: Callable = np.nanmedian,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Function to bin 2D data and compute array statistic based on density.
     This function inputs 2D coordinates, e.g. `X` and `Y` locations, and a number value
@@ -544,7 +548,7 @@ def gaussian_smooth(
     do_segments: bool = False,
     filter_size: int = 13,
     mode: str = "mirror",
-    breaks: Optional[list] = None,
+    breaks: Optional[List[int]] = None,
 ) -> np.ndarray:
     """
     Applies a Gaussian smoothing to a curve.
@@ -609,7 +613,7 @@ def bspline_smooth(
     x: Optional[npt.ArrayLike] = None,
     degree: int = 3,
     do_segments: bool = False,
-    breaks: Optional[list] = None,
+    breaks: Optional[List[int]] = None,
     n_knots: int = 100,
 ) -> np.ndarray:
     """
@@ -623,7 +627,7 @@ def bspline_smooth(
         Optional. x array, as `y = f(x)`` used to find discontinuities in `f(x)`. If x
         is given then splits will be computed, if not `breaks` argument as to be provided.
     degree : int
-        Degree of the psline fit, default is 3.
+        Degree of the spline fit, default is 3.
     do_segments : boolean
         Do the splines per segments with splits computed from data `x` or given in `breaks`.
     breaks : list of ints
@@ -663,7 +667,9 @@ def bspline_smooth(
 
     y_smooth = []
     v = np.arange(y.shape[-1])
-    DM = spline1d(v, np.linspace(v.min(), v.max(), n_knots)).toarray()
+    DM = spline1d(
+        v, knots=np.linspace(v.min(), v.max(), n_knots), degree=degree
+    ).toarray()
     # do segments
     arr_splits = np.array_split(np.arange(len(v)), splits)
     masks = np.asarray(
@@ -685,7 +691,7 @@ def bspline_smooth(
     return np.array(y_smooth)
 
 
-def _find_uncontaminated_pixels(mask):
+def _find_uncontaminated_pixels(mask: sparse.spmatrix) -> sparse.spmatrix:
     """
     creates a mask of shape nsources x npixels where targets are not contaminated.
     This mask is used to select pixels to build the PSF model.
@@ -696,7 +702,9 @@ def _find_uncontaminated_pixels(mask):
     return new_mask
 
 
-def to_fits(data, path=None, overwrite=False, **extra_data):
+def to_fits(
+    data: dict, path: Optional[str] = None, overwrite: bool = False, **extra_data: Any
+) -> "fits.HDUList":
     """Converts the light curve to a FITS file in the Kepler/TESS file format.
 
     The FITS file will be returned as a `~astropy.io.fits.HDUList` object.
@@ -736,9 +744,10 @@ def to_fits(data, path=None, overwrite=False, **extra_data):
     def _header_template(extension):
         """Returns a template `fits.Header` object for a given extension."""
         template_fn = os.path.join(
-            os.path.dirname(os.path.dirname(PACKAGEDIR)), 
-            "data", 
-            "templates", f"lc-ext{extension}-header.txt"
+            os.path.dirname(os.path.dirname(PACKAGEDIR)),
+            "data",
+            "templates",
+            f"lc-ext{extension}-header.txt",
         )
         return fits.Header.fromtextfile(template_fn)
 
@@ -840,3 +849,49 @@ def to_fits(data, path=None, overwrite=False, **extra_data):
     if path is not None:
         hdu.writeto(path, overwrite=overwrite, checksum=True)
     return hdu
+
+
+def clean_blends_in_catalog(
+    catalog: pd.DataFrame,
+    blend_limit: float,
+    remove: str = "faint",
+    filter: str = "F146",
+) -> pd.DataFrame:
+    """
+    Cleans the catalog by removing sources withing `blend_limit`.
+
+    Parameters
+    ----------
+    catalog : pd.DataFrame
+        The input catalog DataFrame containing 'ra' and 'dec' columns.
+    blend_limit : float
+        The distance limit in arcseconds to consider a source as a blend.
+    remove : str
+        The type of sources to remove. Options are 'faint' or 'bright'.
+
+    Returns
+    -------
+    pd.DataFrame
+        A cleaned DataFrame with rows containing NaN in 'ra' or 'dec' removed.
+    """
+    print(f"Limiting blended sources to > {blend_limit} arcsec")
+    cat = SkyCoord(ra=catalog.ra.values * u.degree, dec=catalog.dec.values * u.degree)
+    idxc, idxcat, d2d, _ = cat.search_around_sky(
+        cat, blend_limit * u.arcsec
+    )
+    idxc = idxc[d2d > 0]
+    idxcat = idxcat[d2d > 0]
+    d2d = d2d[d2d > 0]
+    dropfaint = []
+    for l, r, d in zip(idxc, idxcat, d2d):
+        # print(catalog.loc[l, filter], catalog.loc[r, filter], d.arcsec)
+        if catalog.loc[l, filter] > catalog.loc[r, filter]:
+            dropfaint.append(l)
+        else:
+            dropfaint.append(r)
+    dropfaint = np.unique(dropfaint)
+    print(f"Dropping {len(dropfaint)} faint blended catalog")
+    catalog.drop(dropfaint, axis=0, inplace=True)
+    catalog.reset_index(drop=True, inplace=True)
+
+    return catalog

@@ -2,7 +2,7 @@
 Defines the main Machine object that fit a mean PRF model to sources
 """
 
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 import astropy.units as u
 import matplotlib.pyplot as plt
@@ -10,10 +10,10 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 from astropy.stats import sigma_clip
-from scipy import sparse, stats
+from scipy import sparse
 from tqdm import tqdm
 
-from . import __version__
+from . import log
 from .utils import (
     _find_uncontaminated_pixels,
     _make_A_polar,
@@ -54,7 +54,7 @@ class Machine(object):
         cut_r: float = 0.2,
         sparse_dist_lim: float = 4,
         sources_flux_column: str = "flux",
-    ):
+    ) -> None:
         """
         Parameters
         ----------
@@ -189,13 +189,13 @@ class Machine(object):
         self._update_delta_arrays(frame_index=0)
 
     @property
-    def shape(self):
+    def shape(self) -> tuple[int, int, int]:
         return (self.nsources, self.nt, self.npixels)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"Machine (N sources, N times, N pixels): {self.shape}"
 
-    def pixel_coordinates(self, frame_index: int = 0):
+    def pixel_coordinates(self, frame_index: int = 0) -> tuple[np.ndarray, np.ndarray]:
         ROW, COL = (
             self.WCSs[frame_index]
             .all_world2pix(self.sources.loc[:, ["ra", "dec"]].values, 0.0)
@@ -203,7 +203,7 @@ class Machine(object):
         )
         return ROW, COL
 
-    def _update_delta_arrays(self, frame_index: int = 0):
+    def _update_delta_arrays(self, frame_index: int = 0) -> None:
         """
         Wrapper method to update dra, ddec, r and phi.
 
@@ -220,7 +220,7 @@ class Machine(object):
         else:
             self._update_delta_sparse_arrays(frame_index=frame_index)
 
-    def _updated_delta_numpy_arrays(self, frame_index: int = 0):
+    def _updated_delta_numpy_arrays(self, frame_index: int = 0) -> None:
         """
         Creates dra, ddec, r and phi numpy ndarrays .
 
@@ -249,7 +249,7 @@ class Machine(object):
         self.r = np.hypot(self.dra, self.ddec).to("arcsec")
         self.phi = np.arctan2(self.ddec, self.dra)
 
-    def _update_delta_sparse_arrays(self, frame_index: int = 0):
+    def _update_delta_sparse_arrays(self, frame_index: int = 0) -> None:
         """
         Creates dra, ddec, r and phi arrays as sparse arrays to be used for dense data,
         e.g. Kepler FFIs or cluster fields. Assuming that there is no flux information
@@ -315,7 +315,7 @@ class Machine(object):
         reference_frame: int = 0,
         iterations: int = 2,
         plot: bool = False,
-    ):
+    ) -> Optional[Any]:
         """
         Find the round pixel mask that identifies pixels with contributions from ANY of source.
         The source mask is created from one frame, then with `self.radius` it can be updated
@@ -416,9 +416,7 @@ class Machine(object):
             ax[0].scatter(
                 r, 10**max_f, s=2, alpha=0.5, label="Pixel data", rasterized=True
             )
-            ax[0].scatter(
-                rdata, mmdata, s=2, label="Mean Model", rasterized=True
-            )
+            ax[0].scatter(rdata, mmdata, s=2, label="Mean Model", rasterized=True)
             ax[0].legend(loc="upper right")
             ax[0].set_xlim(rbins[k].min() - 0.04, rbins[k].max() + 0.04)
             ax[0].set_ylim(-0.05, 1.5)
@@ -454,11 +452,13 @@ class Machine(object):
             ax[2].set_ylim(0.1, 1e4)
             ax[2].set_xlabel("r [arcsec]")
             ax[2].set_ylabel("Flux [e-/s]")
-            
+
             return fig
         return
 
-    def _update_source_mask(self, frame_index: int = 0, source_flux_limit: float = 1):
+    def _update_source_mask(
+        self, frame_index: int = 0, source_flux_limit: float = 1
+    ) -> None:
         """
         Update source mask using self.radius when the ra,dec coordinate grid changes
 
@@ -485,7 +485,7 @@ class Machine(object):
 
         return
 
-    def _get_uncontaminated_pixel_mask(self):
+    def _get_uncontaminated_pixel_mask(self) -> None:
         """
         creates a mask of shape nsources x npixels where targets are not contaminated.
         This mask is used to select pixels to build the PSF model.
@@ -510,7 +510,7 @@ class Machine(object):
         self.uncontaminated_source_mask.eliminate_zeros()
         return
 
-    def _get_centroids(self):
+    def _get_centroids(self) -> None:
         """
         Find the ra and dec centroid of the image, at each time.
         """
@@ -523,7 +523,7 @@ class Machine(object):
         bin_data: bool = False,
         plot: bool = False,
         **kwargs,
-    ):
+    ) -> Optional[Any]:
         """
         Builds a sparse model matrix of shape nsources x npixels to be used when
         fitting each source pixels to estimate its PSF photometry
@@ -657,7 +657,7 @@ class Machine(object):
             return self.plot_shape_model(frame_index=frame_index, bin_data=bin_data)
         return
 
-    def _get_mean_model(self):
+    def _get_mean_model(self) -> None:
         """
         Convenience function to make the scene model
         """
@@ -681,7 +681,7 @@ class Machine(object):
 
     def _update_source_mask_remove_bkg_pixels(
         self, flux_cut_off: float = 1, frame_index: Union[str, int] = "mean"
-    ):
+    ) -> None:
         """
         Update the `source_mask` to remove pixels that do not contribuite to the PRF
         shape.
@@ -710,7 +710,7 @@ class Machine(object):
         if frame_index == "mean":
             f = self.flux.mean(axis=0)
             # fe = (self.flux_err **2 ).sum(axis=0) ** 0.5 / self.nt
-        elif isinstance(frame_index, int):
+        elif isinstance(frame_index, (int, np.int32, np.int64)):
             f = self.flux[frame_index]
             # fe = self.flux_err[frame_index]
 
@@ -754,7 +754,9 @@ class Machine(object):
         self._get_mean_model()
         self.flux_cut_off = flux_cut_off
 
-    def _get_normalized_mean_model(self, npoints=300, plot=False):
+    def _get_normalized_mean_model(
+        self, npoints: int = 300, plot: bool = False
+    ) -> None:
         """
         Renomarlize shape model to sum 1
 
@@ -829,7 +831,7 @@ class Machine(object):
             fig.colorbar(im, ax=ax, location="bottom")
             plt.show()
 
-    def get_psf_metrics(self, npoints_per_pixel=10):
+    def get_psf_metrics(self, npoints_per_pixel: int = 10) -> None:
         """
         Computes three metrics for the PSF model:
             source_psf_fraction: the amount of PSF in the data. Tells how much of a
@@ -939,7 +941,9 @@ class Machine(object):
             )
             self.perturbed_std = np.nanstd(perturbed_lcs, axis=0)
 
-    def plot_shape_model(self, frame_index="mean", bin_data=False):
+    def plot_shape_model(
+        self, frame_index: Union[str, int] = "mean", bin_data: bool = False
+    ) -> Any:
         """
         Diagnostic plot of shape model.
 
@@ -1124,7 +1128,12 @@ class Machine(object):
 
         return fig
 
-    def fit_model(self, prior_mu=None, prior_sigma=None, compute_model=False):
+    def fit_model(
+        self,
+        prior_mu: Optional[np.ndarray] = None,
+        prior_sigma: Optional[np.ndarray] = None,
+        compute_model: bool = False,
+    ) -> None:
         """
         Finds the best fitting weights for every source, simultaneously
 
@@ -1174,7 +1183,9 @@ class Machine(object):
                     nnls=False,
                 )
             except np.linalg.LinAlgError:
-                print("WARNING: matrix is singular, trying without errors, this could lead to nans")
+                print(
+                    "WARNING: matrix is singular, trying without errors, this could lead to nans"
+                )
                 self.ws[tdx], self.werrs[tdx] = solve_linear_model(
                     X,
                     self.flux[tdx],
