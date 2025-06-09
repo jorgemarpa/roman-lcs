@@ -529,7 +529,6 @@ class RomanMachine(Machine):
 
         # open file
         hdu = fits.open(input)
-        print(hdu[1].header)
         # check if shape parameters are for correct mission, quarter, and channel
         if hdu[1].header["MISSION"].strip().lower() != self.meta["MISSION"].strip().lower():
             raise ValueError("Wrong shape model: file is for mission Roman")
@@ -720,16 +719,14 @@ class RomanMachine(Machine):
             self.flux_3d[frame_index],
             norm=norm,
             cmap=plt.cm.viridis,
-            # origin="lower",
             rasterized=True,
-            # extent=extent,
         )
         plt.colorbar(bar, ax=ax, shrink=0.7, label=r"Flux ($e^{-}s^{-1}$)")
         ax.grid(True, which="major", axis="both", ls="-", color="w", alpha=0.7)
         ax.set_xlabel("R.A. [hh:mm]")
         ax.set_ylabel("Decl. [deg]")
-        ax.set_xlim(self.column.min() - 5, self.column.max() + 5)
-        ax.set_ylim(self.row.min() - 5, self.row.max() + 5)
+        ax.set_xlim(self.column[frame_index].min() - 4, self.column[frame_index].max() + 4)
+        ax.set_ylim(self.row[frame_index].min() - 4, self.row[frame_index].max() + 4)
 
         ax.set_title(
             f"{self.meta['MISSION']} | {self.meta['DETECTOR']} | {self.meta['FILTER']}\n"
@@ -828,7 +825,7 @@ class RomanMachine(Machine):
                 )
                 lcs.append(lc)
 
-            self.lcs = lk.LightCurveCollection(self.lcs)
+            self.lcs = lk.LightCurveCollection(lcs)
         elif mode == "table":
             raise NotImplementedError
 
