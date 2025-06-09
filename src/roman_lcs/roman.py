@@ -782,7 +782,7 @@ class RomanMachine(Machine):
                 )
                 lcs.append(lc)
 
-            self.lcs = lk.LightCurveCollection(self.lcs)
+            self.lcs = lk.LightCurveCollection(lcs)
         elif mode == "table":
             raise NotImplementedError
 
