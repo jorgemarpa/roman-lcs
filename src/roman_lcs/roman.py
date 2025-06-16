@@ -423,6 +423,7 @@ class RomanMachine(Machine):
         # self._remove_bad_pixels_from_source_mask()
         if plot:
             return self.plot_shape_model(frame_index=frame_index, bin_data=bin_data)
+        return None
 
     def save_shape_model(self, output: Optional[str] = None) -> None:
         """
@@ -554,135 +555,13 @@ class RomanMachine(Machine):
         # work in arcseconds
         self._get_mean_model()
         # remove background pixels and recreate mean model
-        self._update_source_mask_remove_bkg_pixels(flux_cut_off=flux_cut_off)
+        # self._update_source_mask_remove_bkg_pixels(flux_cut_off=flux_cut_off)
         # self._remove_bad_pixels_from_source_mask()
 
         if plot:
             return self.plot_shape_model(frame_index=self.ref_frame)
         return
 
-    def residuals(
-        self, plot: bool = False, zoom: bool = False, metric: str = "residuals"
-    ) -> Optional[matplotlib.figure.Figure]:
-        """
-        Get the residuals (model - image) and compute statistics. It creates a model
-        of the full image using the `mean_model` and the weights computed when fitting
-        the shape model.
-
-        Parameters
-        ----------
-        plot : bool
-            Do plotting.
-        zoom : bool
-            If plot is True then zoom into a section of the image for better
-            visualization.
-        metric : string
-            Type of metric used to plot. Default is "residuals", "chi2" is also
-            available.
-
-        Return
-        ------
-        fig : matplotlib figure
-            Figure.
-        """
-        if not hasattr(self, "ws"):
-            self.fit_model(fit_va=False)
-
-        # evaluate mean model
-        ffi_model = self.mean_model.T.dot(self.ws[0])
-        ffi_model_err = self.mean_model.T.dot(self.werrs[0])
-        # compute residuals
-        residuals = ffi_model - self.flux[0]
-        weighted_chi = (ffi_model - self.flux[0]) ** 2 / ffi_model_err
-        # mask background
-        source_mask = ffi_model != 0.0
-        # rms
-        self.rms = np.sqrt((residuals[source_mask] ** 2).mean())
-        self.frac_esidual_median = np.median(
-            residuals[source_mask] / self.flux[0][source_mask]
-        )
-        self.frac_esidual_std = np.std(
-            residuals[source_mask] / self.flux[0][source_mask]
-        )
-
-        if plot:
-            fig, ax = plt.subplots(2, 2, figsize=(15, 15))
-
-            ax[0, 0].scatter(
-                self.column,
-                self.row,
-                c=self.flux[0],
-                marker="s",
-                s=7.5 if zoom else 1,
-                norm=colors.SymLogNorm(linthresh=500, vmin=0, vmax=5000, base=10),
-            )
-            ax[0, 0].set_aspect("equal", adjustable="box")
-
-            ax[0, 1].scatter(
-                self.column,
-                self.row,
-                c=ffi_model,
-                marker="s",
-                s=7.5 if zoom else 1,
-                norm=colors.SymLogNorm(linthresh=500, vmin=0, vmax=5000, base=10),
-            )
-            ax[0, 1].set_aspect("equal", adjustable="box")
-
-            if metric == "residuals":
-                to_plot = residuals
-                norm = colors.SymLogNorm(linthresh=500, vmin=-5000, vmax=5000, base=10)
-                cmap = "RdBu"
-            elif metric == "chi2":
-                to_plot = weighted_chi
-                norm = colors.LogNorm(vmin=1, vmax=5000)
-                cmap = "viridis"
-            else:
-                raise ValueError("wrong type of metric")
-
-            cbar = ax[1, 0].scatter(
-                self.column[source_mask],
-                self.row[source_mask],
-                c=to_plot[source_mask],
-                marker="s",
-                s=7.5 if zoom else 1,
-                cmap=cmap,
-                norm=norm,
-            )
-            ax[1, 0].set_aspect("equal", adjustable="box")
-            plt.colorbar(
-                cbar, ax=ax[1, 0], label=r"Flux ($e^{-}s^{-1}$)", fraction=0.042
-            )
-
-            ax[1, 1].hist(
-                residuals[source_mask] / self.flux[0][source_mask],
-                bins=50,
-                log=True,
-                label=(
-                    "RMS (model - data) = %.3f" % self.rms
-                    + "\nMedian = %.3f" % self.frac_esidual_median
-                    + "\nSTD = %3f" % self.frac_esidual_std
-                ),
-            )
-            ax[1, 1].legend(loc="best")
-
-            ax[0, 0].set_ylabel("Pixel Row Number")
-            ax[0, 0].set_xlabel("Pixel Column Number")
-            ax[0, 1].set_xlabel("Pixel Column Number")
-            ax[1, 0].set_ylabel("Pixel Row Number")
-            ax[1, 0].set_xlabel("Pixel Column Number")
-            ax[1, 1].set_xlabel("(model - data) / data")
-            ax[1, 0].set_title(metric)
-
-            if zoom:
-                ax[0, 0].set_xlim(self.column.min(), self.column.min() + 100)
-                ax[0, 0].set_ylim(self.row.min(), self.row.min() + 100)
-                ax[0, 1].set_xlim(self.column.min(), self.column.min() + 100)
-                ax[0, 1].set_ylim(self.row.min(), self.row.min() + 100)
-                ax[1, 0].set_xlim(self.column.min(), self.column.min() + 100)
-                ax[1, 0].set_ylim(self.row.min(), self.row.min() + 100)
-
-            return fig
-        return
 
     def plot_image(
         self,
