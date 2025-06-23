@@ -185,7 +185,7 @@ class Machine(object):
         self.npixels = self.flux.shape[1]
 
         # self.ra_centroid, self.dec_centroid = np.zeros((2)) * u.deg
-
+        self.is_sparse = not(self.nsources * self.npixels < 2e5)
         self._create_delta_arrays()
 
     @property
@@ -218,10 +218,10 @@ class Machine(object):
         # Hardcoded: sparse implementation is efficient when nsourxes * npixels < 2e5
         # (JMP profile this)
         # https://github.com/SSDataLab/psfmachine/pull/17#issuecomment-866382898
-        if self.nsources * self.npixels < 2e5:
-            self._create_delta_numpy_arrays(centroid_offset=centroid_offset)
-        else:
+        if self.is_sparse:
             self._create_delta_sparse_arrays(centroid_offset=centroid_offset)
+        else:
+            self._create_delta_numpy_arrays(centroid_offset=centroid_offset)
 
     def _create_delta_numpy_arrays(
         self, centroid_offset: Tuple[float, float] = (0, 0),
@@ -1201,6 +1201,7 @@ class Machine(object):
             self._create_delta_arrays(
                 centroid_offset=(self.ra_centroid[tdx].value, self.dec_centroid[tdx].value)
             )
+            self._get_mean_model()
             X = self.mean_model.copy()
             X = X.T
             try:
