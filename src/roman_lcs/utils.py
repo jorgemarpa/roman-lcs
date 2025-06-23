@@ -129,7 +129,8 @@ def _make_A_cartesian(
     x: npt.ArrayLike,
     y: npt.ArrayLike,
     n_knots: int = 10,
-    radius: float = 3.0,
+    radius: Optional[float] = None,
+    degree: int = 3,
     knot_spacing_type: str = "sqrt",
 ) -> sparse.spmatrix:
     """
@@ -157,14 +158,18 @@ def _make_A_cartesian(
     """
     # Must be odd
     n_odd_knots = n_knots if n_knots % 2 == 1 else n_knots + 1
-    if knot_spacing_type == "sqrt":
-        x_knots = np.linspace(-np.sqrt(radius), np.sqrt(radius), n_odd_knots)
-        x_knots = np.sign(x_knots) * x_knots**2
-        y_knots = np.linspace(-np.sqrt(radius), np.sqrt(radius), n_odd_knots)
-        y_knots = np.sign(y_knots) * y_knots**2
+    if radius is not None:
+        if knot_spacing_type == "sqrt":
+            x_knots = np.linspace(-np.sqrt(radius), np.sqrt(radius), n_odd_knots)
+            x_knots = np.sign(x_knots) * x_knots**2
+            y_knots = np.linspace(-np.sqrt(radius), np.sqrt(radius), n_odd_knots)
+            y_knots = np.sign(y_knots) * y_knots**2
+        else:
+            x_knots = np.linspace(-radius, radius, n_odd_knots)
+            y_knots = np.linspace(-radius, radius, n_odd_knots)
     else:
-        x_knots = np.linspace(-radius, radius, n_odd_knots)
-        y_knots = np.linspace(-radius, radius, n_odd_knots)
+        x_knots = np.linspace(*np.percentile(x, [0, 100]), n_odd_knots)
+        y_knots = np.linspace(*np.percentile(y, [0, 100]), n_odd_knots)
 
     x_spline = spline1d(x, knots=x_knots, degree=degree, include_knots=True)
     y_spline = spline1d(y, knots=y_knots, degree=degree, include_knots=True)
@@ -895,3 +900,18 @@ def clean_blends_in_catalog(
     catalog.reset_index(drop=True, inplace=True)
 
     return catalog
+
+
+def matrix_solve(model, data, data_err=None, power=2.0):
+    A = model.T
+    # A = np.array(model)[:,None].T
+    x = data.ravel()[:, None]
+
+    if not (data_err is None):
+        x_err = data_err.ravel()[:, None]
+        A = 1.0 / x_err**power * A
+        x = 1.0 / x_err**power * x
+
+    w = np.linalg.solve(A.T.dot(A), A.T.dot(x))
+
+    return w
