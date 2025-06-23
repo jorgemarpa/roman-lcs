@@ -15,9 +15,12 @@ from astropy.io import fits
 from astropy.visualization import simple_norm
 from roman_cuts import RomanCuts
 from scipy import ndimage
+from scipy import sparse
+from tqdm import tqdm
 
 from . import __version__, log
 from .machine import Machine
+from .utils import _make_A_cartesian, _make_A_polar, matrix_solve, solve_linear_model
 
 
 class RomanMachine(Machine):
@@ -110,7 +113,6 @@ class RomanMachine(Machine):
         row = row.reshape((-1, np.multiply(*self.image_shape)))
         column = column.reshape((-1, np.multiply(*self.image_shape)))
 
-
         # init `machine` object
         super().__init__(
             time,
@@ -172,11 +174,11 @@ class RomanMachine(Machine):
     ) -> "RomanMachine":
         """
         Reads data from files and initiates a new object of RomanMachine class.
-        Two options are available: 
-        1. If providing pixel coordinates with `cutout_origin`, 
-            the data will be fixed tothe pixel grid, no dithering 
+        Two options are available:
+        1. If providing pixel coordinates with `cutout_origin`,
+            the data will be fixed tothe pixel grid, no dithering
             correctin will be applied and the star field will move across the image.
-        2. When providing `cutout_center` in RA, Dec coordinates, 
+        2. When providing `cutout_center` in RA, Dec coordinates,
             the data will be cetered in the target coordinate and account for
             dithering. The star field will be fixed, but the pixel grid will change.
 
@@ -187,7 +189,7 @@ class RomanMachine(Machine):
         cutout_size : int, optional
             Size of the cutout in , assumed to be squared
         cutout_origin : tuple of ints
-            Origin pixel coordinates where to start the cut out. The cutout will be 
+            Origin pixel coordinates where to start the cut out. The cutout will be
             centered in `cutout_origin + cutout_size / 2`. Follows matrix indexing.
         cutout_center : tuple of floats, optional
             Center of the cutout in RA, Dec coordinates. If provided, the cutout will be
@@ -210,7 +212,6 @@ class RomanMachine(Machine):
                 "Source catalog has to be a Pandas DataFrame with columns "
                 "['ra', 'dec', 'row', 'column', 'flux']"
             )
-        
 
         # load FITS files and parse arrays
         (
@@ -236,8 +237,8 @@ class RomanMachine(Machine):
             dithered = False
 
         #####
-        # ra,dec and row,column are 3D arrays 
-        # with shape of [n_times, axis1, axis2] 
+        # ra,dec and row,column are 3D arrays
+        # with shape of [n_times, axis1, axis2]
         #####
         log.info("Initializing RomanMachine object...")
         return RomanMachine(
@@ -531,7 +532,10 @@ class RomanMachine(Machine):
         # open file
         hdu = fits.open(input)
         # check if shape parameters are for correct mission, quarter, and channel
-        if hdu[1].header["MISSION"].strip().lower() != self.meta["MISSION"].strip().lower():
+        if (
+            hdu[1].header["MISSION"].strip().lower()
+            != self.meta["MISSION"].strip().lower()
+        ):
             raise ValueError("Wrong shape model: file is for mission Roman")
         if int(hdu[1].header["FIELD"]) != self.meta["FIELD"]:
             raise ValueError("Wrong field")
@@ -561,7 +565,6 @@ class RomanMachine(Machine):
         if plot:
             return self.plot_shape_model(frame_index=self.ref_frame)
         return
-
 
     def plot_image(
         self,
@@ -604,7 +607,9 @@ class RomanMachine(Machine):
         ax.grid(True, which="major", axis="both", ls="-", color="w", alpha=0.7)
         ax.set_xlabel("R.A. [hh:mm]")
         ax.set_ylabel("Decl. [deg]")
-        ax.set_xlim(self.column[frame_index].min() - 4, self.column[frame_index].max() + 4)
+        ax.set_xlim(
+            self.column[frame_index].min() - 4, self.column[frame_index].max() + 4
+        )
         ax.set_ylim(self.row[frame_index].min() - 4, self.row[frame_index].max() + 4)
 
         ax.set_title(
@@ -708,6 +713,173 @@ class RomanMachine(Machine):
         elif mode == "table":
             raise NotImplementedError
 
+    def _get_bkg_model_terms(
+        self,
+        target_idx: List[int] = [0],
+        gradient: bool = True,
+        bkg_poly_order: int = 2,
+    ):
+        """
+        Returns background model terms for the given target index.
+
+        Parameters
+        ----------
+        target_idx : int or list of ints
+            Index of the target for which to compute background model terms.
+            If a list is provided, the first element will be used.
+        gradient : bool
+            Whether to include gradient terms in the background model.
+        bkg_poly_order : int
+            Order of the polynomial used for background model fitting.
+
+        Returns
+        -------
+        bkg_terms : numpy.ndarray
+            Array of background model terms for the given target index.
+            The shape of the array is (n_terms, n_pixels), where n_terms is the
+            number of background model terms and n_pixels is the number of pixels
+            in the image.
+        """
+        tpfshape = self.image_shape
+        bkg_terms = []
+        bkg_terms.append(np.ones(tpfshape).ravel())
+
+        if gradient:
+            dx_ravel = self.dra[target_idx].value.ravel()
+            dy_ravel = self.ddec[target_idx].value.ravel()
+
+            for i in range(1, bkg_poly_order + 1):
+                for j in range(0, i + 1):
+                    bkg_terms.append(dx_ravel**j * dy_ravel ** (i - j))
+
+        return np.array(bkg_terms)
+
+    def _get_maean_model_nomask(self) -> None:
+        """
+        Computes a mean model of each source in the image with the PSF shape model
+        and no mask applied, i.e. using all available pixels in the image.
+        """
+        if self.is_sparse:
+            r = self.r.data
+            phi = self.phi.data
+        else:
+            r = self.r.value.ravel()
+            phi = self.phi.value.ravel()
+
+        # print(r.shape, phi.shape)
+        Ap = _make_A_polar(
+            phi,
+            r,
+            rmin=self.rmin,
+            rmax=self.rmax,
+            cut_r=self.cut_r,
+            n_r_knots=self.n_r_knots,
+            n_phi_knots=self.n_phi_knots,
+        )
+        if self.is_sparse:
+            mean_model = sparse.csr_matrix(self.r.shape)
+            m = 10 ** Ap.dot(self.psf_w)
+            m[~np.isfinite(m)] = 0
+            mean_model[self.source_mask] = m
+            mean_model.eliminate_zeros()
+        else:
+            mean_model = 10 ** Ap.dot(self.psf_w)
+            mean_model[~np.isfinite(mean_model)] = 0
+            mean_model = mean_model.reshape(self.r.shape)
+        mean_model[mean_model < np.percentile(mean_model, 40)] = 0
+        mean_model /= np.nansum(mean_model, axis=1, keepdims=True)
+        # self.mean_model = sparse.csr_matrix(mean_model)
+        self.mean_model = mean_model
+
+        return
+
+    def fit_prf_photometry(
+        self, targets: List[int] = [], model_bkg: bool = True
+    ) -> None:
+        """
+        Fits PRF photometry the given targets in the image accounting for backgronund
+        stars and signal.
+
+        Parameters
+        ----------
+        targets : list of int, optional
+            List of target names to fit PRF photometry for. If None, all sources in
+        """
+        n_targets = len(targets) if len(targets) > 0 else len(self.sources)
+        targets_prf_flux = np.zeros((self.nt, n_targets))
+        targets_prf_flux_err = np.zeros((self.nt, n_targets))
+        scene_model = np.zeros_like(self.flux)
+
+        if model_bkg:
+            # get background model terms
+            # bkg_terms = self._get_bkg_model_terms(
+            #     target_idx=targets[0] if len(targets) > 0 else 0,
+            #     bkg_poly_order=3,
+            # )
+            bkg_terms = _make_A_cartesian(
+                x=self.dra[targets[0] if len(targets) > 0 else 0].value.ravel(),
+                y=self.ddec[targets[0] if len(targets) > 0 else 0].value.ravel(),
+                n_knots=5,
+            ).T
+            # bkg_terms = bkg_terms.toarray()
+            # bkg_terms = sparse.csr_matrix(bkg_terms)
+            # bkg_terms.eliminate_zeros()
+
+        for tdx in tqdm(range(self.nt), desc="Fitting PRF photometry", total=self.nt):
+            # update sparse arrays due to offsets
+            self._create_delta_arrays(
+                centroid_offset=(
+                    self.ra_centroid[tdx].value,
+                    self.dec_centroid[tdx].value,
+                )
+            )
+            # update mean model due to offsets
+            self._get_maean_model_nomask()
+            # get targets PSF model
+            mean_model = self.mean_model.copy()
+            if len(targets) > 0:
+                targets_models = mean_model[targets]
+                # get background stars PSF model
+                bkg_star_model = mean_model[
+                    ~np.isin(self.sources.index.values, targets)
+                ]
+                bkg_star_flux = np.delete(self.source_flux_estimates, targets)
+                # compute background star scene
+                bkg_star_model = bkg_star_model.T.dot(bkg_star_flux)[None, :]
+                bkg_star_model = sparse.csr_matrix(bkg_star_model)
+                # stack linear model with target, bkg stars and bkg signal
+                model = sparse.vstack([targets_models, bkg_star_model]).tocsr()
+                # model = np.vstack([targets_models, bkg_star_model])
+            else:
+                model = mean_model
+            if model_bkg:
+                # print("model", model.shape, type(model))
+                # print("bkg_terms", bkg_terms.shape, type(bkg_terms))
+                model = sparse.vstack([model, bkg_terms]).tocsr()
+                # model = np.vstack([model, bkg_terms])
+            # solve linear model with current flux
+            # print("model", model.shape, type(model))
+            # w, werr = solve_linear_model(
+            #     # sparse.csr_matrix(model.T),
+            #     model.T,
+            #     y=self.flux[tdx],
+            #     y_err=self.flux_err[tdx],
+            #     errors=True,
+            # )
+            w = matrix_solve(model.toarray(), self.flux[tdx], data_err=self.flux_err[tdx])
+            # assign flux phot values to targets
+            targets_prf_flux[tdx, :] = w[:n_targets]
+            # targets_prf_flux_err[tdx, :] = werr[:n_targets]
+            # build full scene model
+            scene_model[tdx] = model.T.dot(w).ravel()
+            # break
+
+        self.targets_prf_flux = targets_prf_flux
+        self.targets_prf_flux_err = targets_prf_flux_err
+        self.scene_model = scene_model
+
+        return
+
 
 def _load_file(
     fname: Union[str, List[str], np.ndarray],
@@ -764,7 +936,9 @@ def _load_file(
     if not isinstance(fname, (list, np.ndarray)):
         fname = np.sort([fname])
     if len(cutout_center) != 2:
-        raise ValueError("`cutout_center` must be a tuple of two values (row, column) or (RA, Dec).")
+        raise ValueError(
+            "`cutout_center` must be a tuple of two values (row, column) or (RA, Dec)."
+        )
     if isinstance(cutout_center[0], (int, np.int32, np.int64)):
         rowcol = cutout_center
         radec = (None, None)
@@ -774,29 +948,36 @@ def _load_file(
         rowcol = (None, None)
         dithered = True
     else:
-        raise ValueError("`cutout_center` must be a tuple of two int values (row, column) or float (RA, Dec).")
-    
+        raise ValueError(
+            "`cutout_center` must be a tuple of two int values (row, column) or float (RA, Dec)."
+        )
+
     field = int(fname[0].split("_")[-5][5:])
     sca = int(fname[0].split("_")[-6][3:])
     filter = fname[0].split("_")[-7]
     rcube = RomanCuts(field=field, sca=sca, filter=filter, file_list=fname)
-    rcube.make_cutout(rowcol=rowcol, radec=radec, size=(cutout_size, cutout_size), dithered=dithered)
+    rcube.make_cutout(
+        rowcol=rowcol, radec=radec, size=(cutout_size, cutout_size), dithered=dithered
+    )
 
     # put row,col and ra,dec into 3D arrasy [ntimes, axis1, axis2]
     if dithered:
         row_3d, col_3d = np.vstack(
-            [[np.meshgrid(r, c, indexing="ij")]for r,c in zip(rcube.row, rcube.column)]
-            ).transpose((1,0,2,3))
+            [
+                [np.meshgrid(r, c, indexing="ij")]
+                for r, c in zip(rcube.row, rcube.column)
+            ]
+        ).transpose((1, 0, 2, 3))
         ra_3d, dec_3d = rcube.wcss[0].all_pix2world(row_3d[0], col_3d[0], 0)
-        ra_3d = np.atleast_3d(ra_3d).transpose((2,0,1))
-        dec_3d = np.atleast_3d(dec_3d).transpose((2,0,1))
+        ra_3d = np.atleast_3d(ra_3d).transpose((2, 0, 1))
+        dec_3d = np.atleast_3d(dec_3d).transpose((2, 0, 1))
     else:
         row_3d, col_3d = np.meshgrid(rcube.row, rcube.column, indexing="ij")
         row_3d = np.atleast_3d(row_3d).transpose((2, 0, 1))
         col_3d = np.atleast_3d(col_3d).transpose((2, 0, 1))
         ra_3d, dec_3d = np.vstack(
             [[x.all_pix2world(row_3d[0], col_3d[0], 0)] for x in rcube.wcss]
-            ).transpose((1,0,2,3))
+        ).transpose((1, 0, 2, 3))
 
     return (
         rcube.wcss,
