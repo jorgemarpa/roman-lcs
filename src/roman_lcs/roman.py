@@ -231,9 +231,9 @@ class RomanMachine(Machine):
             cutout_size=cutout_size,
             cutout_center=cutout_center,
         )
-        if ra.shape[0] == 1:
+        if ra.shape[0] > 1:
             dithered = True
-        elif row.shape[0] == 1:
+        else:
             dithered = False
 
         #####
@@ -378,14 +378,14 @@ class RomanMachine(Machine):
     def _update_source_mask(
         self, frame_index: int = 0, source_flux_limit: float = 1
     ) -> None:
-        super()._update_source_mask(
-            frame_index=frame_index,
-            source_flux_limit=source_flux_limit,
-        )
         """
         Adapted version of `machine._update_source_mask()` that masks out saturated and
         bright halo pixels in FFIs. See parameter descriptions in `Machine`.
         """
+        super()._update_source_mask(
+            frame_index=frame_index,
+            source_flux_limit=source_flux_limit,
+        )
         # self._remove_bad_pixels_from_source_mask()
 
     def _remove_bad_pixels_from_source_mask(self) -> None:
@@ -810,29 +810,24 @@ class RomanMachine(Machine):
         targets_prf_flux_err = np.zeros((self.nt, n_targets))
         scene_model = np.zeros_like(self.flux)
 
-        if model_bkg:
+        # if model_bkg:
             # get background model terms
             # bkg_terms = self._get_bkg_model_terms(
             #     target_idx=targets[0] if len(targets) > 0 else 0,
             #     bkg_poly_order=3,
             # )
-            bkg_terms = _make_A_cartesian(
-                x=self.dra[targets[0] if len(targets) > 0 else 0].value.ravel(),
-                y=self.ddec[targets[0] if len(targets) > 0 else 0].value.ravel(),
-                n_knots=5,
-            ).T
+            # bkg_terms = _make_A_cartesian(
+            #     x=self.dra[targets[0] if len(targets) > 0 else 0].value.ravel(),
+            #     y=self.ddec[targets[0] if len(targets) > 0 else 0].value.ravel(),
+            #     n_knots=3,
+            # ).T
             # bkg_terms = bkg_terms.toarray()
             # bkg_terms = sparse.csr_matrix(bkg_terms)
             # bkg_terms.eliminate_zeros()
 
         for tdx in tqdm(range(self.nt), desc="Fitting PRF photometry", total=self.nt):
             # update sparse arrays due to offsets
-            self._create_delta_arrays(
-                centroid_offset=(
-                    self.ra_centroid[tdx].value,
-                    self.dec_centroid[tdx].value,
-                )
-            )
+            self._update_delta_arrays(frame_index=tdx)
             # update mean model due to offsets
             self._get_maean_model_nomask()
             # get targets PSF model
@@ -853,23 +848,30 @@ class RomanMachine(Machine):
             else:
                 model = mean_model
             if model_bkg:
+                bkg_terms = _make_A_cartesian(
+                    x=self.dra[targets[0] if len(targets) > 0 else 0].value.ravel(),
+                    y=self.ddec[targets[0] if len(targets) > 0 else 0].value.ravel(),
+                    n_knots=3,
+                ).T
                 # print("model", model.shape, type(model))
                 # print("bkg_terms", bkg_terms.shape, type(bkg_terms))
                 model = sparse.vstack([model, bkg_terms]).tocsr()
                 # model = np.vstack([model, bkg_terms])
             # solve linear model with current flux
             # print("model", model.shape, type(model))
-            # w, werr = solve_linear_model(
-            #     # sparse.csr_matrix(model.T),
-            #     model.T,
-            #     y=self.flux[tdx],
-            #     y_err=self.flux_err[tdx],
-            #     errors=True,
+            w, werr = solve_linear_model(
+                # sparse.csr_matrix(model.T),
+                model.T,
+                y=self.flux[tdx],
+                y_err=self.flux_err[tdx],
+                errors=True,
+            )
+            # w = matrix_solve(
+            #     model.toarray(), self.flux[tdx], data_err=self.flux_err[tdx]
             # )
-            w = matrix_solve(model.toarray(), self.flux[tdx], data_err=self.flux_err[tdx])
             # assign flux phot values to targets
             targets_prf_flux[tdx, :] = w[:n_targets]
-            # targets_prf_flux_err[tdx, :] = werr[:n_targets]
+            targets_prf_flux_err[tdx, :] = werr[:n_targets]
             # build full scene model
             scene_model[tdx] = model.T.dot(w).ravel()
             # break
@@ -968,9 +970,12 @@ def _load_file(
                 for r, c in zip(rcube.row, rcube.column)
             ]
         ).transpose((1, 0, 2, 3))
-        ra_3d, dec_3d = rcube.wcss[0].all_pix2world(row_3d[0], col_3d[0], 0)
-        ra_3d = np.atleast_3d(ra_3d).transpose((2, 0, 1))
-        dec_3d = np.atleast_3d(dec_3d).transpose((2, 0, 1))
+        ra_3d, dec_3d = np.vstack(
+            [
+                [x.all_pix2world(r, c, 0)]
+                for x, r, c in zip(rcube.wcss, row_3d, col_3d)
+            ]
+        ).transpose((1, 0, 2, 3))
     else:
         row_3d, col_3d = np.meshgrid(rcube.row, rcube.column, indexing="ij")
         row_3d = np.atleast_3d(row_3d).transpose((2, 0, 1))
