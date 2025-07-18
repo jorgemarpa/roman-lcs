@@ -1,6 +1,7 @@
 """Collection of utility functions"""
 
 import datetime
+import logging
 import os
 import warnings
 from typing import Any, Callable, List, Optional, Tuple, Union
@@ -8,10 +9,13 @@ from typing import Any, Callable, List, Optional, Tuple, Union
 import astropy.units as u
 import numpy as np
 import numpy.typing as npt
-from patsy import dmatrix
 import pandas as pd
 from astropy.coordinates import SkyCoord
+from astropy.io import fits
+from patsy import dmatrix
 from scipy import sparse
+
+log = logging.getLogger(__name__)
 
 from . import PACKAGEDIR, __version__
 
@@ -777,13 +781,13 @@ def to_fits(
         for kw in default:
             hdu.header["{}".format(kw).upper()] = default[kw]
             if default[kw] is None:
-                print("Value for {} is None.".format(kw))
+                log.info("Value for {} is None.".format(kw))
 
         for kw in extra_data:
             if isinstance(extra_data[kw], (str, float, int, bool, type(None))):
                 hdu.header["{}".format(kw).upper()] = extra_data[kw]
                 if extra_data[kw] is None:
-                    print("Value for {} is None.".format(kw))
+                    log.info("Value for {} is None.".format(kw))
         return hdu
 
     def _make_lightcurve_extension(data, extra_data=None):
@@ -859,7 +863,6 @@ def to_fits(
 def clean_blends_in_catalog(
     catalog: pd.DataFrame,
     blend_limit: float,
-    remove: str = "faint",
     filter: str = "F146",
 ) -> pd.DataFrame:
     """
@@ -879,7 +882,7 @@ def clean_blends_in_catalog(
     pd.DataFrame
         A cleaned DataFrame with rows containing NaN in 'ra' or 'dec' removed.
     """
-    print(f"Limiting blended sources to > {blend_limit} arcsec")
+    log.info(f"Limiting blended sources to > {blend_limit} arcsec")
     cat = SkyCoord(ra=catalog.ra.values * u.degree, dec=catalog.dec.values * u.degree)
     idxc, idxcat, d2d, _ = cat.search_around_sky(
         cat, blend_limit * u.arcsec
@@ -889,13 +892,13 @@ def clean_blends_in_catalog(
     d2d = d2d[d2d > 0]
     dropfaint = []
     for l, r, d in zip(idxc, idxcat, d2d):
-        # print(catalog.loc[l, filter], catalog.loc[r, filter], d.arcsec)
+        # log.info(catalog.loc[l, filter], catalog.loc[r, filter], d.arcsec)
         if catalog.loc[l, filter] > catalog.loc[r, filter]:
             dropfaint.append(l)
         else:
             dropfaint.append(r)
     dropfaint = np.unique(dropfaint)
-    print(f"Dropping {len(dropfaint)} faint blended catalog")
+    log.info(f"Dropping {len(dropfaint)} faint blended catalog")
     catalog.drop(dropfaint, axis=0, inplace=True)
     catalog.reset_index(drop=True, inplace=True)
 
