@@ -2,7 +2,7 @@
 Defines the main Machine object that fit a mean PRF model to sources
 """
 
-from typing import Any, Optional, Union, Tuple
+from typing import Any, Optional, Union
 
 import astropy.units as u
 import matplotlib.pyplot as plt
@@ -13,7 +13,6 @@ from astropy.stats import sigma_clip
 from scipy import sparse
 from tqdm import tqdm
 
-from . import log
 from .utils import (
     _find_uncontaminated_pixels,
     _make_A_polar,
@@ -339,8 +338,8 @@ class Machine(object):
             Make a diagnostic plot
         """
         # make sure delta arrays are from the reference frame.
-        self._update_delta_arrays(frame_index=reference_frame)
-        self.radius = 3 * self.pixel_scale.to(u.arcsecond).value
+        # self._update_delta_arrays(frame_index=reference_frame)
+        self.radius = 4 * self.pixel_scale.to(u.arcsecond).value
         if not sparse.issparse(self.r):
             self.rough_mask = sparse.csr_matrix(self.r.value < self.radius)
         else:
@@ -369,11 +368,12 @@ class Machine(object):
                 ]
             )
             fbins = np.asarray([np.nanpercentile(max_f[m], 25) for m in masks])
+            fbins_e = np.asarray([np.nanstd(max_f[m]) for m in masks])
             rbins = rbins[1:] - np.median(np.diff(rbins))
             k = np.isfinite(fbins)
             if not k.any():
                 raise ValueError("Can not find source mask")
-            l = np.polyfit(rbins[k], fbins[k], 1)
+            l = np.polyfit(rbins[k], fbins[k], deg=1, w=fbins_e[k])
 
             if sparse.issparse(self.r):
                 mean_model = self.r.copy()
@@ -425,7 +425,7 @@ class Machine(object):
             ax[0].set_ylabel("Normalized flux")
 
             ax[1].set_title("Binned Flux Source Profile")
-            ax[1].plot(rbins[k], fbins[k], label="Data")
+            ax[1].errorbar(rbins[k], fbins[k], yerr=fbins_e[k], label="Data")
             ax[1].plot(rbins[k], np.polyval(l, rbins[k]), label="Polynomial")
             ax[1].legend(loc="upper right")
             ax[1].set_xlabel("r [arcsec]")
@@ -542,7 +542,7 @@ class Machine(object):
         self,
         flux_cut_off: float = 1,
         frame_index: Union[str, int] = 0,
-        bin_data: bool = False,
+        bin_data: int = 0,
         plot: bool = False,
         **kwargs,
     ) -> Optional[Any]:
@@ -594,32 +594,29 @@ class Machine(object):
         #     .data
         # )
         # We only need these weights for the wings, so we'll use poisson noise
-        mean_f_err = (
-            self.uncontaminated_source_mask.astype(float)
-            .multiply((f**0.5) / (f * np.log(10)))
-            .multiply(1 / flux_estimates)
-            .data
-        )
-        mean_f_err.data = np.abs(mean_f_err.data)
+        # mean_f_err = (
+        #     self.uncontaminated_source_mask.astype(float)
+        #     .multiply((f**0.5) / (f * np.log(10)))
+        #     .multiply(1 / flux_estimates)
+        #     .data
+        # )
+        # mean_f_err.data = np.abs(mean_f_err.data)
 
         # take value from Quantity is not necessary
         phi_b = self.uncontaminated_source_mask.multiply(self.phi).data
         r_b = self.uncontaminated_source_mask.multiply(self.r).data
 
-        if bin_data:
+        if bin_data > 0:
             # number of bins is hardcoded to work with FFI or TPFs accordingly
             # I found 30 works good with TPF stacks (<10000 pixels),
             # 90 with FFIs (tipically >50k pixels), and 60 in between.
             # this could be improved later if necessary
-            nbins = (
-                30 if mean_f.shape[0] <= 1e4 else (60 if mean_f.shape[0] <= 5e4 else 90)
-            )
-            _, phi_b, r_b, mean_f, mean_f_err = threshold_bin(
+            _, phi_b, r_b, mean_f, _ = threshold_bin(
                 phi_b,
                 r_b,
                 mean_f,
-                z_err=mean_f_err,
-                bins=nbins,
+                # z_err=mean_f_err,
+                bins=bin_data,
                 abs_thresh=5,
             )
 
@@ -820,11 +817,12 @@ class Machine(object):
         mean_model_hd_ma[~mask] = -np.inf
 
         # double integral using trapezoidal rule
-        self.mean_model_integral = np.trapz(
-            np.trapz(10**mean_model_hd_ma, r_hd[:, 0], axis=0),
-            phi_hd[0, :],
-            axis=0,
-        )
+        # self.mean_model_integral = np.trapezoid(
+        #     np.trapezoid(10**mean_model_hd_ma, r_hd[:, 0], axis=0),
+        #     phi_hd[0, :],
+        #     axis=0,
+        # )
+        self.mean_model_integral = np.nansum(10**mean_model_hd_ma)
         # renormalize weights and build new shape model
         if not self.normalized_shape_model:
             self.psf_w *= np.log10(self.mean_model_integral)
@@ -1032,18 +1030,18 @@ class Machine(object):
             ylim=(-radius, radius),
         )
         # arrow to show centroid offset correction
-        if hasattr(self, "ra_centroid_avg"):
-            ax[0, 0].arrow(
-                0,
-                0,
-                self.ra_centroid_avg.to("arcsec").value,
-                self.dec_centroid_avg.to("arcsec").value,
-                width=1e-6,
-                shape="full",
-                head_width=0.02,
-                head_length=0.05,
-                color="tab:red",
-            )
+        # if hasattr(self, "ra_centroid_avg"):
+        #     ax[0, 0].arrow(
+        #         0,
+        #         0,
+        #         self.ra_centroid_avg.to("arcsec").value,
+        #         self.dec_centroid_avg.to("arcsec").value,
+        #         width=1e-6,
+        #         shape="full",
+        #         head_width=0.02,
+        #         head_length=0.05,
+        #         color="tab:red",
+        #     )
 
         phi, r = np.arctan2(dy, dx), np.hypot(dx, dy)
         im = ax[0, 1].scatter(
@@ -1079,7 +1077,7 @@ class Machine(object):
             cmap="viridis",
             vmin=vmin,
             vmax=vmax,
-            s=3,
+            s=2,
             rasterized=True,
         )
         ax[1, 1].set(
@@ -1095,7 +1093,7 @@ class Machine(object):
             cmap="viridis",
             vmin=vmin,
             vmax=vmax,
-            s=3,
+            s=2,
             rasterized=True,
         )
         ax[1, 0].set(
@@ -1182,7 +1180,7 @@ class Machine(object):
         for tdx in tqdm(
             range(self.nt),
             desc=f"Fitting {self.nsources} Sources (w. VA)",
-            # disable=self.quiet,
+            disable=self.quiet,
         ):
             # update source mask for current frame
             # self._update_delta_numpy_arrays(frame_index=tdx)
