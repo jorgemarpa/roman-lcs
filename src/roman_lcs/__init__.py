@@ -2,22 +2,9 @@
 # -*- coding: utf-8 -*-
 from __future__ import absolute_import
 
-import logging
 import os
 
-__version__ = "0.2.0"
-
-def get_logger():
-    """
-    Creates a logger
-    """
-    logger = logging.getLogger(__name__)
-    logger.setLevel(logging.INFO)
-    logger.addHandler(logging.StreamHandler())
-    return logger
-
-
-log = get_logger()
+__version__ = "0.3.0"
 
 PACKAGEDIR = os.path.abspath(os.path.dirname(__file__))
 
