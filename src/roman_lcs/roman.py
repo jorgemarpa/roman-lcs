@@ -1,27 +1,27 @@
 """Subclass of `Machine` that Specifically work with FFIs"""
 
+import logging
 import os
-from typing import Optional, Union, Tuple, List, Any
-import numpy as np
-import pandas as pd
-import matplotlib.axes
-import matplotlib.figure
+from typing import Any, List, Optional, Tuple, Union
 
 import astropy.units as u
 import lightkurve as lk
-import matplotlib.colors as colors
+import matplotlib.axes
+import matplotlib.figure
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 from astropy.io import fits
 from astropy.visualization import simple_norm
 from roman_cuts import RomanCuts
-from scipy import ndimage
-from scipy import sparse
+from scipy import ndimage, sparse
 from tqdm import tqdm
 
-from . import __version__, log
+from . import __version__
 from .machine import Machine
 from .utils import _make_A_cartesian, _make_A_polar, matrix_solve, solve_linear_model
 
+log = logging.getLogger(__name__)
 
 class RomanMachine(Machine):
     """
@@ -519,6 +519,7 @@ class RomanMachine(Machine):
         # check if file exists and is the right format
         if not os.path.isfile(input):
             raise FileNotFoundError(f"No shape file: {input}")
+        log.info(f"Loading shape model from {input}")
 
         # create source mask and uncontaminated pixel mask
         # if not hasattr(self, "source_mask"):
@@ -754,7 +755,7 @@ class RomanMachine(Machine):
 
         return np.array(bkg_terms)
 
-    def _get_maean_model_nomask(self) -> None:
+    def _get_mean_model_nomask(self) -> None:
         """
         Computes a mean model of each source in the image with the PSF shape model
         and no mask applied, i.e. using all available pixels in the image.
@@ -809,6 +810,7 @@ class RomanMachine(Machine):
         targets_prf_flux = np.zeros((self.nt, n_targets))
         targets_prf_flux_err = np.zeros((self.nt, n_targets))
         scene_model = np.zeros_like(self.flux)
+        bkg_model = np.zeros_like(self.flux)
 
         # if model_bkg:
             # get background model terms
@@ -825,11 +827,16 @@ class RomanMachine(Machine):
             # bkg_terms = sparse.csr_matrix(bkg_terms)
             # bkg_terms.eliminate_zeros()
 
-        for tdx in tqdm(range(self.nt), desc="Fitting PRF photometry", total=self.nt):
+        for tdx in tqdm(
+            range(self.nt), 
+            desc="Fitting PRF photometry", 
+            total=self.nt, 
+            disable=self.quiet,
+            ):
             # update sparse arrays due to offsets
             self._update_delta_arrays(frame_index=tdx)
             # update mean model due to offsets
-            self._get_maean_model_nomask()
+            self._get_mean_model()
             # get targets PSF model
             mean_model = self.mean_model.copy()
             if len(targets) > 0:
@@ -859,13 +866,20 @@ class RomanMachine(Machine):
                 # model = np.vstack([model, bkg_terms])
             # solve linear model with current flux
             # print("model", model.shape, type(model))
-            w, werr = solve_linear_model(
-                # sparse.csr_matrix(model.T),
-                model.T,
-                y=self.flux[tdx],
-                y_err=self.flux_err[tdx],
-                errors=True,
-            )
+            try:
+                w, werr = solve_linear_model(
+                    # sparse.csr_matrix(model.T),
+                    model.T,
+                    y=self.flux[tdx],
+                    y_err=self.flux_err[tdx],
+                    errors=True,
+                )
+            except np.linalg.LinAlgError as e:
+                log.error(f"Error solving linear model: {e}")
+                log.error("Skipping this cadence.")
+                targets_prf_flux[tdx, :] = -1e6
+                targets_prf_flux_err[tdx, :] = -1e6
+                continue
             # w = matrix_solve(
             #     model.toarray(), self.flux[tdx], data_err=self.flux_err[tdx]
             # )
@@ -874,11 +888,14 @@ class RomanMachine(Machine):
             targets_prf_flux_err[tdx, :] = werr[:n_targets]
             # build full scene model
             scene_model[tdx] = model.T.dot(w).ravel()
+            if model_bkg:
+                bkg_model[tdx] = bkg_terms.T.dot(w[n_targets+1:]).ravel()
             # break
 
         self.targets_prf_flux = targets_prf_flux
         self.targets_prf_flux_err = targets_prf_flux_err
         self.scene_model = scene_model
+        self.bkg_model = bkg_model
 
         return
 
@@ -911,7 +928,7 @@ def _load_file(
         Name of the FFI files
     cutout_size: int
         Size of (square) portion of FFIs to cut out
-    cutout_size: tuple of ints or floats
+    cutout_center: tuple of ints or floats
         Coordinates of the center of the cut out (row, column) or (RA, Dec).
 
     Returns
@@ -953,7 +970,9 @@ def _load_file(
         raise ValueError(
             "`cutout_center` must be a tuple of two int values (row, column) or float (RA, Dec)."
         )
-
+    log.info(radec)
+    log.info(len(fname))
+    log.info(dithered)
     field = int(fname[0].split("_")[-5][5:])
     sca = int(fname[0].split("_")[-6][3:])
     filter = fname[0].split("_")[-7]
