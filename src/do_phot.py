@@ -1,17 +1,19 @@
-import logging
-import sys
 import argparse
+import logging
 import os
 import sqlite3
+import sys
 import warnings
+from datetime import datetime
 from glob import glob
 from typing import Optional
-from datetime import datetime
 
 import numpy as np
 import pandas as pd
 from roman_cuts import RomanCuts
 from threadpoolctl import threadpool_limits
+# from mem_profile import mem_profile
+
 
 from roman_lcs import RomanMachine
 from roman_lcs.utils import clean_blends_in_catalog, to_fits
@@ -36,6 +38,7 @@ ZP = {
     "F213": 25.85726796291789,
 }
 
+# @profile
 def do_target_photometry(
     target: int = 0,
     FIELD: int = 3,
@@ -53,15 +56,14 @@ def do_target_photometry(
             f"{PATH}/simulated_image_data/rimtimsim_WFI_lvl02_{FILTER}_SCA{SCA:02}_field{FIELD:02}_rampfitted_exposureno_*_sim.fits"
         )
     )
-    if False:
-        parPATH = "/Volumes/TRExS/dryrun01/"
-        ffp = sorted(
-            glob(
-                f"{parPATH}/simulated_image_data/rimtimsim_WFI_lvl02_{FILTER}_SCA{SCA:02}_field{FIELD:02}_rampfitted_exposureno_*_sim.fits"
-            )
-        )
-        ff.extend(ffp)
-        ff = np.unique(ff).tolist()
+    # parPATH = "/Volumes/JorgeMarpa-2T/trexs/dryrun_01/"
+    # ff = sorted(
+    #     glob(
+    #         f"{parPATH}/simulated_image_data/rimtimsim_WFI_lvl02_{FILTER}_SCA{SCA:02}_field{FIELD:02}_rampfitted_exposureno_*_sim.fits"
+    #     )
+    # )
+    # ff.extend(ff)
+    ff = np.unique(ff).tolist()
     if len(ff) < 0:
         log.error(f"No files found for Field {FIELD} Filter {FILTER} in folder {PATH}.")
         return 1
@@ -148,6 +150,7 @@ def do_target_photometry(
     log.info(f"Target indices: {targets_idx.tolist()}")
 
     # start Machine object
+    log.info("Create RomanMachine object")
     try:
         mac = RomanMachine.from_file(
             ff,
@@ -312,12 +315,12 @@ if __name__ == "__main__":
         SCA=2,
         FILTER=args.filter,
         cutout_size=args.cutout_size,
-        mag_limit=23.0,
+        mag_limit=24.0,
         fit_blends=args.fit_blends,
         blend_limit=args.blend_limit,
         nthreads=4,  # set to None to use all available threads
     )
 
-    with open(f"../logs/photometry_{args.filter}.log", "a") as f:
+    with open(f"../logs/photometry_{args.filter}_cutout.log", "a") as f:
         f.write(f"{datetime.now()} - Target {args.target} exit code: {exit}\n")
     log.info(f"Photometry done for target {args.target} with exit code {exit}.")
