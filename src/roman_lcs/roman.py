@@ -970,9 +970,6 @@ def _load_file(
         raise ValueError(
             "`cutout_center` must be a tuple of two int values (row, column) or float (RA, Dec)."
         )
-    log.info(radec)
-    log.info(len(fname))
-    log.info(dithered)
     field = int(fname[0].split("_")[-5][5:])
     sca = int(fname[0].split("_")[-6][3:])
     filter = fname[0].split("_")[-7]

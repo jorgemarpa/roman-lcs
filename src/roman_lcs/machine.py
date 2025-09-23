@@ -346,7 +346,8 @@ class Machine(object):
             self.rough_mask = sparse_lessthan(self.r, self.radius)
         self.source_mask = self.rough_mask.copy()
         self.source_mask.eliminate_zeros()
-        self.uncontaminated_source_mask = _find_uncontaminated_pixels(self.source_mask)
+        # self.uncontaminated_source_mask = _find_uncontaminated_pixels(self.source_mask)
+        self._get_uncontaminated_pixel_mask()
 
         for _ in range(iterations):
             mask = self.uncontaminated_source_mask
@@ -983,22 +984,22 @@ class Machine(object):
         """
         if frame_index == "mean":
             mean_f = np.log10(
-                self.uncontaminated_source_mask.astype(float)
+                self.source_mask.astype(float)
                 .multiply(self.flux[self.time_mask].mean(axis=0))
                 .multiply(1 / self.source_flux_estimates[:, None])
                 .data
             )
         elif isinstance(frame_index, (int, np.int32, np.int64)):
             mean_f = np.log10(
-                self.uncontaminated_source_mask.astype(float)
+                self.source_mask.astype(float)
                 .multiply(self.flux[frame_index])
                 .multiply(1 / self.source_flux_estimates[:, None])
                 .data
             )
 
         dx, dy = (
-            self.uncontaminated_source_mask.multiply(self.dra),
-            self.uncontaminated_source_mask.multiply(self.ddec),
+            self.source_mask.multiply(self.dra),
+            self.source_mask.multiply(self.ddec),
         )
         dx = dx.data * u.deg.to(u.arcsecond)
         dy = dy.data * u.deg.to(u.arcsecond)
