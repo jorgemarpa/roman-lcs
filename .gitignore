@@ -19,3 +19,4 @@ src/do_phot_F146_cmd*
 src/*sh
 logs*
 data/roman_wfi_dryrun01_lcs_v00.tar.gz
+src/__pycache__/mem_profile.cpython-310.pyc
