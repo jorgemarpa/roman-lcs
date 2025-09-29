@@ -1157,7 +1157,7 @@ class Machine(object):
         compute_model: bool = False,
     ) -> None:
         """
-        Finds the best fitting weights for every source, simultaneously
+        Finds the best fitting weights for every source simultaneously
 
         Parameters
         ----------
