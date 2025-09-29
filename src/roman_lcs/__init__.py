@@ -3,8 +3,9 @@
 from __future__ import absolute_import
 
 import os
+from importlib import metadata
 
-__version__ = "0.3.0"
+__version__ = metadata.version(__package__)
 
 PACKAGEDIR = os.path.abspath(os.path.dirname(__file__))
 
