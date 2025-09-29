@@ -1,3 +1,6 @@
+[![PyPI](https://img.shields.io/pypi/v/roman-lcs.svg)](https://pypi.org/project/roman-lcs)
+[![pytest](https://github.com/jorgemarpa/roman-lcs/actions/workflows/pytest.yaml/badge.svg)](https://github.com/jorgemarpa/roman-lcs/actions/workflows/pytest.yaml/) [![ruff](https://github.com/jorgemarpa/roman-lcs/actions/workflows/ruff.yaml/badge.svg)](https://github.com/jorgemarpa/roman-lcs/actions/workflows/ruff.yaml)[![Docs](https://github.com/jorgemarpa/roman-lcs/actions/workflows/deploy-mkdocs.yaml/badge.svg)](https://github.com/jorgemarpa/roman-lcs/actions/workflows/deploy-mkdocs.yaml)
+
 # Roman-lcs
 
 Tools to do PSF photometry on Roman simulated data from TRExS group.
