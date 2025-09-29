@@ -1,7 +1,7 @@
 .python-version
 site
 dist
-notebooks/devs
+notebooks_dev/
 notebooks/data
 notebooks/.ipynb_checkpoints
 .ruff_cache
