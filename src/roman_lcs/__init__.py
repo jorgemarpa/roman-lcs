@@ -2,18 +2,14 @@
 # -*- coding: utf-8 -*-
 from __future__ import absolute_import
 
-import logging
 import os
+from importlib import metadata
 
-__version__ = "0.1.0"
-
-# Configure logging
-logger = logging.getLogger(__name__)
-logger.addHandler(logging.StreamHandler())
+__version__ = metadata.version("roman_lcs")
 
 PACKAGEDIR = os.path.abspath(os.path.dirname(__file__))
 
 from .machine import Machine  # noqa
-from .roman import RomanMachine
+from .roman import RomanMachine  # noqa
 
 __all__ = ["Machine", "RomanMachine"]

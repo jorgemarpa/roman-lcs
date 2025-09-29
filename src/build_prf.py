@@ -4,7 +4,6 @@ from glob import glob
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from astropy.visualization import simple_norm
 from matplotlib.backends.backend_pdf import FigureCanvasPdf, PdfPages
 
 from roman_lcs import RomanMachine
@@ -12,9 +11,7 @@ from roman_lcs import RomanMachine
 PATH = "/Users/jimartin/Work/ROMAN/TRExS/simulations/dryrun_01"
 # PATH = "/Volumes/seagate_exhd/trexs/DryRun_01"
 
-ZP = {'F087': 26.29818407774948,
-'F146': 27.577660642304814,
-'F213': 25.85726796291789}
+ZP = {"F087": 26.29818407774948, "F146": 27.577660642304814, "F213": 25.85726796291789}
 
 
 def plot_image_and_mask(mac):
@@ -28,8 +25,8 @@ def plot_image_and_mask(mac):
     ax[0].scatter(
         mac.column,
         mac.row,
-        c=mac.flux[mac.ref_frame], 
-        vmin=10, 
+        c=mac.flux[mac.ref_frame],
+        vmin=10,
         vmax=500,
         s=1,
         marker="s",
@@ -40,8 +37,8 @@ def plot_image_and_mask(mac):
     ax[1].scatter(
         mac.column,
         mac.row,
-        c=np.array(mac.source_mask.sum(axis=0)[0]), 
-        vmin=0, 
+        c=np.array(mac.source_mask.sum(axis=0)[0]),
+        vmin=0,
         vmax=4,
         alpha=1,
         cmap="YlGnBu",
@@ -54,8 +51,8 @@ def plot_image_and_mask(mac):
     ax[2].scatter(
         mac.column,
         mac.row,
-        c=np.array(mac.uncontaminated_source_mask.sum(axis=0)[0]), 
-        vmin=0, 
+        c=np.array(mac.uncontaminated_source_mask.sum(axis=0)[0]),
+        vmin=0,
         vmax=1,
         alpha=1,
         cmap="Blues",
@@ -80,12 +77,10 @@ def build_prf(
     FIELD: int = 3,
     FILTER: str = "F146",
     cutout_size: int = 256,
-    mag_limit: float=21.0,
+    mag_limit: float = 21.0,
     plot: bool = False,
     cutout_origin: tuple = (0, 0),
 ):
-
-
     ff = sorted(
         glob(
             f"{PATH}/simulated_image_data/rimtimsim_WFI_lvl02_{FILTER}_SCA02_field{FIELD:02}_rampfitted_exposureno_*_sim.fits"
@@ -115,15 +110,15 @@ def build_prf(
     print(f"Total sources Mag_{FILTER} <= {mag_limit} is {len(sources)}.")
 
     mac = RomanMachine.from_file(
-        ff[:1], 
+        ff[:1],
         sources=sources,
-        sparse_dist_lim=2, 
+        sparse_dist_lim=2,
         sources_flux_column="flux",
         cutout_size=cutout_size,
         cutout_origin=cutout_origin,
     )
     print(mac)
-    mac.contaminant_flux_limit = 10 ** ((ZP[FILTER] - 21.0)/2.5)
+    mac.contaminant_flux_limit = 10 ** ((ZP[FILTER] - 21.0) / 2.5)
 
     mac.rmin = 0.02
     mac.rmax = 0.8
@@ -131,13 +126,19 @@ def build_prf(
     mac.n_r_knots = 9
     mac.n_phi_knots = 15
 
-    OUTPATH = f"/Users/jimartin/Work/ROMAN/TRExS/Roman-lcs/data"
+    OUTPATH = "/Users/jimartin/Work/ROMAN/TRExS/Roman-lcs/data"
 
     if plot:
         pdf_name = f"build_PRF_plots_{mac.meta['FIELD']}_{mac.meta['FILTER']}_xo{cutout_origin[0]}-yo{cutout_origin[1]}_s{cutout_size}_m{int(mag_limit)}.pdf"
         with PdfPages(f"{OUTPATH}/figures/{pdf_name}") as pdf:
-            FigureCanvasPdf(mac.plot_image(sources=True, frame_index=0)).print_figure(pdf)
-            FigureCanvasPdf(mac._get_source_mask(source_flux_limit=10, plot=True, reference_frame=0, iterations=1)).print_figure(pdf)
+            FigureCanvasPdf(mac.plot_image(sources=True, frame_index=0)).print_figure(
+                pdf
+            )
+            FigureCanvasPdf(
+                mac._get_source_mask(
+                    source_flux_limit=10, plot=True, reference_frame=0, iterations=1
+                )
+            ).print_figure(pdf)
             FigureCanvasPdf(plot_image_and_mask(mac)).print_figure(pdf)
             FigureCanvasPdf(
                 mac.build_shape_model(
@@ -147,7 +148,7 @@ def build_prf(
                     bin_data=False,
                 )
             ).print_figure(pdf)
-        print(f"Saving figures file to \n"f"{OUTPATH}/figures/{pdf_name}")
+        print(f"Saving figures file to \n{OUTPATH}/figures/{pdf_name}")
     else:
         mac._get_source_mask(
             source_flux_limit=10, plot=True, reference_frame=0, iterations=1
@@ -162,6 +163,7 @@ def build_prf(
     print(f"Saving PRF file to \n{fname}")
 
     print("Done!")
+
 
 if __name__ == "__main__":
     # program flags
