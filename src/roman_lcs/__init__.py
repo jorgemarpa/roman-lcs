@@ -5,7 +5,7 @@ from __future__ import absolute_import
 import os
 from importlib import metadata
 
-__version__ = metadata.version(__package__)
+__version__ = metadata.version("roman_lcs")
 
 PACKAGEDIR = os.path.abspath(os.path.dirname(__file__))
 
