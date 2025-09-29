@@ -10,7 +10,7 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 from astropy.stats import sigma_clip
-from scipy import sparse
+from scipy import sparse, stats
 from tqdm import tqdm
 
 from .utils import (
@@ -374,16 +374,16 @@ class Machine(object):
             k = np.isfinite(fbins)
             if not k.any():
                 raise ValueError("Can not find source mask")
-            l = np.polyfit(rbins[k], fbins[k], deg=1, w=fbins_e[k])
+            pol = np.polyfit(rbins[k], fbins[k], deg=1, w=fbins_e[k])
 
             if sparse.issparse(self.r):
                 mean_model = self.r.copy()
-                mean_model.data = 10 ** np.polyval(l, mean_model.data)
+                mean_model.data = 10 ** np.polyval(pol, mean_model.data)
                 self.source_mask = (
                     mean_model.multiply(self.source_flux_estimates[:, None])
                 ) > source_flux_limit
             else:
-                mean_model = 10 ** np.polyval(l, self.r.value)
+                mean_model = 10 ** np.polyval(pol, self.r.value)
                 self.source_mask = (
                     sparse.csr_matrix(mean_model * self.source_flux_estimates[:, None])
                     > source_flux_limit
@@ -427,7 +427,7 @@ class Machine(object):
 
             ax[1].set_title("Binned Flux Source Profile")
             ax[1].errorbar(rbins[k], fbins[k], yerr=fbins_e[k], label="Data")
-            ax[1].plot(rbins[k], np.polyval(l, rbins[k]), label="Polynomial")
+            ax[1].plot(rbins[k], np.polyval(pol, rbins[k]), label="Polynomial")
             ax[1].legend(loc="upper right")
             ax[1].set_xlabel("r [arcsec]")
             ax[1].set_ylabel("Normalized Log Flux")
@@ -536,7 +536,7 @@ class Machine(object):
         self.dec_centroid *= u.deg
         self.ra_centroid_avg = self.ra_centroid.mean()
         self.dec_centroid_avg = self.dec_centroid.mean()
-        
+
         return
 
     def build_shape_model(
@@ -1190,7 +1190,7 @@ class Machine(object):
             # self._update_source_mask_remove_bkg_pixels(
             #     flux_cut_off=self.flux_cut_off, frame_index=tdx
             # )
-            
+
             X = self.mean_model.copy()
             X = X.T
             try:

@@ -4,6 +4,7 @@ memory.
 """
 
 import pytest
+
 from roman_lcs import Machine
 
 
@@ -13,4 +14,4 @@ def test_machine():
     """
     with pytest.raises(TypeError) as excinfo:
         _ = Machine()
-    assert excinfo.type == TypeError
+    assert excinfo.type is TypeError

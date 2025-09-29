@@ -13,11 +13,12 @@ import pandas as pd
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from patsy import dmatrix
-from scipy import sparse
-
-log = logging.getLogger(__name__)
+from scipy import optimize, sparse
+from scipy.ndimage import gaussian_filter1d
 
 from . import PACKAGEDIR, __version__
+
+log = logging.getLogger(__name__)
 
 warnings.simplefilter("ignore", sparse.SparseEfficiencyWarning)
 
@@ -884,19 +885,16 @@ def clean_blends_in_catalog(
     """
     log.info(f"Limiting blended sources to > {blend_limit} arcsec")
     cat = SkyCoord(ra=catalog.ra.values * u.degree, dec=catalog.dec.values * u.degree)
-    idxc, idxcat, d2d, _ = cat.search_around_sky(
-        cat, blend_limit * u.arcsec
-    )
+    idxc, idxcat, d2d, _ = cat.search_around_sky(cat, blend_limit * u.arcsec)
     idxc = idxc[d2d > 0]
     idxcat = idxcat[d2d > 0]
     d2d = d2d[d2d > 0]
     dropfaint = []
-    for l, r, d in zip(idxc, idxcat, d2d):
-        # log.info(catalog.loc[l, filter], catalog.loc[r, filter], d.arcsec)
-        if catalog.loc[l, filter] > catalog.loc[r, filter]:
-            dropfaint.append(l)
+    for ls, rs in zip(idxc, idxcat):
+        if catalog.loc[ls, filter] > catalog.loc[rs, filter]:
+            dropfaint.append(ls)
         else:
-            dropfaint.append(r)
+            dropfaint.append(rs)
     dropfaint = np.unique(dropfaint)
     log.info(f"Dropping {len(dropfaint)} faint blended catalog")
     catalog.drop(dropfaint, axis=0, inplace=True)
@@ -910,7 +908,7 @@ def matrix_solve(model, data, data_err=None, power=2.0):
     # A = np.array(model)[:,None].T
     x = data.ravel()[:, None]
 
-    if not (data_err is None):
+    if data_err is not None:
         x_err = data_err.ravel()[:, None]
         A = 1.0 / x_err**power * A
         x = 1.0 / x_err**power * x

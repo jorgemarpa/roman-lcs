@@ -19,9 +19,10 @@ from tqdm import tqdm
 
 from . import __version__
 from .machine import Machine
-from .utils import _make_A_cartesian, _make_A_polar, matrix_solve, solve_linear_model
+from .utils import _make_A_cartesian, _make_A_polar, solve_linear_model
 
 log = logging.getLogger(__name__)
+
 
 class RomanMachine(Machine):
     """
@@ -591,7 +592,7 @@ class RomanMachine(Machine):
             Matlotlib axis with the figure.
         """
         if ax is None:
-            fig = plt.figure(figsize=(10, 10))
+            _ = plt.figure(figsize=(10, 10))
             ax = plt.subplot(projection=self.WCSs[frame_index], label="overlays")
 
         norm = simple_norm(self.flux[frame_index].ravel(), "asinh", percent=95)
@@ -813,26 +814,26 @@ class RomanMachine(Machine):
         bkg_model = np.zeros_like(self.flux)
 
         # if model_bkg:
-            # get background model terms
-            # bkg_terms = self._get_bkg_model_terms(
-            #     target_idx=targets[0] if len(targets) > 0 else 0,
-            #     bkg_poly_order=3,
-            # )
-            # bkg_terms = _make_A_cartesian(
-            #     x=self.dra[targets[0] if len(targets) > 0 else 0].value.ravel(),
-            #     y=self.ddec[targets[0] if len(targets) > 0 else 0].value.ravel(),
-            #     n_knots=3,
-            # ).T
-            # bkg_terms = bkg_terms.toarray()
-            # bkg_terms = sparse.csr_matrix(bkg_terms)
-            # bkg_terms.eliminate_zeros()
+        # get background model terms
+        # bkg_terms = self._get_bkg_model_terms(
+        #     target_idx=targets[0] if len(targets) > 0 else 0,
+        #     bkg_poly_order=3,
+        # )
+        # bkg_terms = _make_A_cartesian(
+        #     x=self.dra[targets[0] if len(targets) > 0 else 0].value.ravel(),
+        #     y=self.ddec[targets[0] if len(targets) > 0 else 0].value.ravel(),
+        #     n_knots=3,
+        # ).T
+        # bkg_terms = bkg_terms.toarray()
+        # bkg_terms = sparse.csr_matrix(bkg_terms)
+        # bkg_terms.eliminate_zeros()
 
         for tdx in tqdm(
-            range(self.nt), 
-            desc="Fitting PRF photometry", 
-            total=self.nt, 
+            range(self.nt),
+            desc="Fitting PRF photometry",
+            total=self.nt,
             disable=self.quiet,
-            ):
+        ):
             # update sparse arrays due to offsets
             self._update_delta_arrays(frame_index=tdx)
             # update mean model due to offsets
@@ -889,7 +890,7 @@ class RomanMachine(Machine):
             # build full scene model
             scene_model[tdx] = model.T.dot(w).ravel()
             if model_bkg:
-                bkg_model[tdx] = bkg_terms.T.dot(w[n_targets+1:]).ravel()
+                bkg_model[tdx] = bkg_terms.T.dot(w[n_targets + 1 :]).ravel()
             # break
 
         self.targets_prf_flux = targets_prf_flux
@@ -987,10 +988,7 @@ def _load_file(
             ]
         ).transpose((1, 0, 2, 3))
         ra_3d, dec_3d = np.vstack(
-            [
-                [x.all_pix2world(r, c, 0)]
-                for x, r, c in zip(rcube.wcss, row_3d, col_3d)
-            ]
+            [[x.all_pix2world(r, c, 0)] for x, r, c in zip(rcube.wcss, row_3d, col_3d)]
         ).transpose((1, 0, 2, 3))
     else:
         row_3d, col_3d = np.meshgrid(rcube.row, rcube.column, indexing="ij")

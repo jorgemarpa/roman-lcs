@@ -12,9 +12,8 @@ import numpy as np
 import pandas as pd
 from roman_cuts import RomanCuts
 from threadpoolctl import threadpool_limits
+
 # from mem_profile import mem_profile
-
-
 from roman_lcs import RomanMachine
 from roman_lcs.utils import clean_blends_in_catalog, to_fits
 
@@ -37,6 +36,7 @@ ZP = {
     "F146": 27.577660642304814,
     "F213": 25.85726796291789,
 }
+
 
 # @profile
 def do_target_photometry(
@@ -77,8 +77,9 @@ def do_target_photometry(
             sources = pd.read_sql_query(
                 f"SELECT * FROM Master_input_catalog WHERE {query}", conn
             )
-    except:
+    except Exception as e:
         log.error(f"Could not load source catalog for target {target}.")
+        log.error(f"Error: {e}")
         return 2
     cutout_center = tuple(sources.loc[0, ["RA_DEG", "DEC_DEG"]].values.tolist())
 
@@ -161,7 +162,7 @@ def do_target_photometry(
             cutout_center=cutout_center,
         )
     except Exception as e:
-        log.error(f"Could not start RomanMachine.")
+        log.error("Could not start RomanMachine.")
         log.error(f"Error: {e}")
         return 6
     log.info(mac)
@@ -297,7 +298,7 @@ if __name__ == "__main__":
     # set logging level
     try:
         args.log = int(args.log)
-    except:
+    except ValueError:
         args.log = str(args.log.upper())
     # log.addHandler(
     #     logging.FileHandler(

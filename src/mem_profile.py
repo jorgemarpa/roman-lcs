@@ -1,8 +1,9 @@
 # mem_profile.py
-import time
-import os
-import psutil
 import inspect
+import os
+import time
+
+import psutil
 
 
 def elapsed_since(start):
