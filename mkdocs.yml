@@ -1,0 +1,85 @@
+site_name: Roman LightCurves
+nav:
+  - Home: README.md
+  - API: 
+    - Machine: machine.md
+    - RomanMachine: roman.md
+    - Utils: utils.md
+  - Tutorials:
+    - Build PRF shape: notebooks/roman_psfmachine_tutorial.ipynb
+    - Extract LCs: notebooks/roman_psfmachine_tutorial.ipynb
+    - Explore LCs: notebooks/roman_psfmachine_tutorial.ipynb
+
+extra:
+    social:
+      - icon: fontawesome/brands/github 
+        link: https://github.com/jorgemarpa
+    version:
+      provider: mike
+      default: stable
+
+copyright: Copyright &copy; 2025 Jorge Martinez-Palomera
+
+theme:
+  name: "material"
+  icon:
+    logo: material/star-plus
+  features:
+    - navigation.footer
+    - header.autohide
+    - navigation.tabs
+    - content.code.copy
+
+  palette: 
+
+    # Palette toggle for light mode
+    - scheme: default
+      toggle:
+        icon: material/brightness-7 
+        name: Switch to dark mode
+      primary: deep purple
+
+    # Palette toggle for dark mode
+    - scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+      primary: deep purple
+      secondary: indigo
+
+repo_url: https://github.com/jorgemarpa/roman-lcs
+plugins:
+  - search
+  - autorefs
+  - mkdocs-jupyter:
+      execute: False
+      include_source: True
+      ignore_h1_titles: True
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          options:
+            docstring_style: "numpy"
+            show_source: false
+            docstring_section_style: table
+            separate_signature: true
+            show_signature_annotations: true
+            signature_crossrefs: true
+            parameter_headings: false
+            show_root_full_path: false
+            show_root_members_full_path: false
+            show_symbol_type_heading: true
+            show_root_heading: true
+            show_source: false
+      watch:
+        - src/roman_lcs
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
