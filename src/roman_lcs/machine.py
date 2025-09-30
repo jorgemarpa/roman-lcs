@@ -964,7 +964,10 @@ class Machine(object):
             self.perturbed_std = np.nanstd(perturbed_lcs, axis=0)
 
     def plot_shape_model(
-        self, frame_index: Union[str, int] = "mean", bin_data: bool = False
+        self,
+        frame_index: Union[str, int] = "mean",
+        bin_data: bool = False,
+        clean: bool = True,
     ) -> Any:
         """
         Diagnostic plot of shape model.
@@ -982,24 +985,28 @@ class Machine(object):
         fig : matplotlib.Figure
             Figure.
         """
+        if clean:
+            use_mask = self.uncontaminated_source_mask
+        else:
+            use_mask = self.source_mask
         if frame_index == "mean":
             mean_f = np.log10(
-                self.source_mask.astype(float)
+                use_mask.astype(float)
                 .multiply(self.flux[self.time_mask].mean(axis=0))
                 .multiply(1 / self.source_flux_estimates[:, None])
                 .data
             )
         elif isinstance(frame_index, (int, np.int32, np.int64)):
             mean_f = np.log10(
-                self.source_mask.astype(float)
+                use_mask.astype(float)
                 .multiply(self.flux[frame_index])
                 .multiply(1 / self.source_flux_estimates[:, None])
                 .data
             )
 
         dx, dy = (
-            self.source_mask.multiply(self.dra),
-            self.source_mask.multiply(self.ddec),
+            use_mask.multiply(self.dra),
+            use_mask.multiply(self.ddec),
         )
         dx = dx.data * u.deg.to(u.arcsecond)
         dy = dy.data * u.deg.to(u.arcsecond)

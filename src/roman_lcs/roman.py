@@ -427,7 +427,7 @@ class RomanMachine(Machine):
             return self.plot_shape_model(frame_index=frame_index, bin_data=bin_data)
         return None
 
-    def save_shape_model(self, output: Optional[str] = None) -> None:
+    def save_shape_model(self, output: Optional[str] = None, save: bool = True) -> None:
         """
         Saves the weights of a PRF fit to disk.
 
@@ -481,7 +481,11 @@ class RomanMachine(Machine):
         table.header["spln_deg"] = (3, "Degree of the spline basis")
         table.header["norm"] = (str(False), "Normalized model")
 
-        table.writeto(output, checksum=True, overwrite=True)
+        if save:
+            table.writeto(output, checksum=True, overwrite=True)
+            return
+        else:
+            return table
 
     def load_shape_model(
         self,
@@ -565,8 +569,56 @@ class RomanMachine(Machine):
         # self._remove_bad_pixels_from_source_mask()
 
         if plot:
-            return self.plot_shape_model(frame_index=self.ref_frame)
+            return self.plot_shape_model(frame_index=self.ref_frame, clean=True)
         return
+
+    def plot_prf_model(
+        self, ax: Optional[matplotlib.axes.Axes] = None, hires: bool = False
+    ) -> matplotlib.axes.Axes:
+        if ax is None:
+            _, ax = plt.subplots(1, figsize=(7, 7))
+
+        if hires:
+            dra = np.linspace(-1.5, 1.5, 500)
+            ddec = np.linspace(-1.5, 1.5, 500)
+            dra, ddec = np.meshgrid(dra, ddec)
+        else:
+            dra = self.source_mask.multiply(self.dra.to("arcsec").value).data
+            ddec = self.source_mask.multiply(self.ddec.to("arcsec").value).data
+
+        r = np.hypot(dra, ddec)
+        phi = np.arctan2(ddec, dra)
+
+        Ap = _make_A_polar(
+            phi.ravel(),
+            r.ravel(),
+            rmin=self.rmin,
+            rmax=self.rmax,
+            cut_r=self.cut_r,
+            n_r_knots=self.n_r_knots,
+            n_phi_knots=self.n_phi_knots,
+        )
+        model = 10 ** Ap.dot(self.psf_w)
+        model = model.reshape(dra.shape)
+
+        cmap = simple_norm(model, "asinh", percent=99.9)
+        if hires:
+            cbar = ax.pcolormesh(dra, ddec, model, norm=cmap)
+            ax.set_title(f"Super Sampled PRF {self.meta['FILTER']}")
+        else:
+            mask = r < 1.5
+            cbar = plt.scatter(
+                dra[mask], ddec[mask], c=model[mask], norm=cmap, s=5
+            )
+            ax.set_title(f"PRF {self.meta['FILTER']}")
+        plt.colorbar(cbar, ax=ax, shrink=0.8)
+        ax.set_xlabel("$\Delta$ R.A. [arcsec]")
+        ax.set_ylabel("$\Delta$ Decl [arcsec]")
+        ax.set_xlim(-1, 1)
+        ax.set_ylim(-1, 1)
+        ax.set_aspect("equal")
+
+        return ax
 
     def plot_image(
         self,
@@ -626,12 +678,15 @@ class RomanMachine(Machine):
         )
 
         if sources:
+            # marker size correlates with source magnitude
+            size = self.sources.loc[:, self.meta["FILTER"]].values
+            size = np.exp(1.5 / ((size - 14) / (10)))
             ax.scatter(
                 scol,
                 srow,
                 c="tab:red",
                 marker="o",
-                s=12,
+                s=size,
                 linewidths=0.1,
                 alpha=0.8,
             )
@@ -658,7 +713,7 @@ class RomanMachine(Machine):
         """
 
         if ax is None:
-            fig, ax = plt.subplots(1, figsize=(10, 10))
+            _, ax = plt.subplots(1, figsize=(10, 10))
         if hasattr(self, "non_bright_source_mask"):
             ax.scatter(
                 self.column_3d.ravel()[~self.non_bright_source_mask],
@@ -974,7 +1029,15 @@ def _load_file(
     field = int(fname[0].split("_")[-5][5:])
     sca = int(fname[0].split("_")[-6][3:])
     filter = fname[0].split("_")[-7]
-    rcube = RomanCuts(field=field, sca=sca, filter=filter, file_list=fname)
+    if "asdf" in fname[0]:
+        format = "asdf"
+    elif "fits" in fname[0]:
+        format = "fits"
+    else:
+        raise ValueError("Input file is not one of 'asdf' or 'fits'.")
+    rcube = RomanCuts(
+        field=field, sca=sca, filter=filter, file_list=fname, file_format=format
+    )
     rcube.make_cutout(
         rowcol=rowcol, radec=radec, size=(cutout_size, cutout_size), dithered=dithered
     )
