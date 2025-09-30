@@ -575,6 +575,26 @@ class RomanMachine(Machine):
     def plot_prf_model(
         self, ax: Optional[matplotlib.axes.Axes] = None, hires: bool = False
     ) -> matplotlib.axes.Axes:
+        """
+        Plot the Point Response Function (PRF) model for the current RomanMachine instance.
+
+        This function visualizes the PRF either at high resolution (supersampled) or at the
+        native pixel sampling, depending on the `hires` flag. The PRF is computed using the
+        spline basis and current PSF weights, and displayed as a color mesh or scatter plot.
+
+        Parameters
+        ----------
+        ax : Optional[matplotlib.axes.Axes], default=None
+            Matplotlib axis to plot on. If None, a new figure and axis will be created.
+        hires : bool, default=False
+            If True, plot a supersampled PRF model. If False, plot at the native pixel sampling.
+
+        Returns
+        -------
+        ax : matplotlib.axes.Axes
+            The matplotlib axis containing the PRF plot.
+        """
+
         if ax is None:
             _, ax = plt.subplots(1, figsize=(7, 7))
 
