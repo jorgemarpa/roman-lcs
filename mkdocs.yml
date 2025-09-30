@@ -6,9 +6,8 @@ nav:
     - RomanMachine: roman.md
     - Utils: utils.md
   - Tutorials:
-    - Build PRF shape: notebooks/roman_psfmachine_tutorial.ipynb
-    - Extract LCs: notebooks/roman_psfmachine_tutorial.ipynb
-    - Explore LCs: notebooks/roman_psfmachine_tutorial.ipynb
+    - Build PRF shape: notebooks/romanmachine_build_prf.ipynb
+    - Extract LCs: notebooks/romanmachine_fit_phot.ipynb
 
 extra:
     social:
