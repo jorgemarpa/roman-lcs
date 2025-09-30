@@ -12,6 +12,7 @@
         - save_shape_model
         - load_shape_model
         - plot_image
+        - plot_prf_model
         - fit_prf_photometry
         - get_lightcurves
       show_root_heading: true
