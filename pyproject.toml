@@ -22,7 +22,7 @@ roman-cuts = ">=0.3.0"
 
 [tool.poetry.group.dev.dependencies]
 mkdocs = "^1.6.0"
-mkdocstrings = {version = "^0.29.0", extras = ["python", "numpy-style"]}
+mkdocstrings = {version = ">=0.29,<0.31", extras = ["python", "numpy-style"]}
 mkdocs-material = "^9.5.33"
 mkdocs-jupyter = "^0.25.1"
 ruff = "^0.6.2"
