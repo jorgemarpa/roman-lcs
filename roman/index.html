@@ -266,7 +266,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../notebooks/roman_psfmachine_tutorial/" class="md-tabs__link">
+        <a href="../notebooks/romanmachine_build_prf/" class="md-tabs__link">
           
   
   
@@ -535,6 +535,15 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#src.roman_lcs.RomanMachine.plot_prf_model" class="md-nav__link">
+    <span class="md-ellipsis">
+      plot_prf_model
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#src.roman_lcs.RomanMachine.fit_prf_photometry" class="md-nav__link">
     <span class="md-ellipsis">
       fit_prf_photometry
@@ -644,7 +653,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../notebooks/roman_psfmachine_tutorial/" class="md-nav__link">
+      <a href="../notebooks/romanmachine_build_prf/" class="md-nav__link">
         
   
   
@@ -667,35 +676,12 @@
   
   
     <li class="md-nav__item">
-      <a href="../notebooks/roman_psfmachine_tutorial/" class="md-nav__link">
+      <a href="../notebooks/romanmachine_fit_phot/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
-    Build PRF shape
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../notebooks/roman_psfmachine_tutorial/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Build PRF shape
+    Extract LCs
     
   </span>
   
@@ -798,6 +784,15 @@
   <a href="#src.roman_lcs.RomanMachine.plot_image" class="md-nav__link">
     <span class="md-ellipsis">
       plot_image
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#src.roman_lcs.RomanMachine.plot_prf_model" class="md-nav__link">
+    <span class="md-ellipsis">
+      plot_prf_model
     </span>
   </a>
   
@@ -1217,7 +1212,9 @@ bright halo pixels in FFIs. See parameter descriptions in <code>Machine</code>.<
 
 
 </h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">save_shape_model</span><span class="p">(</span><span class="n">output</span><span class="p">:</span> <span class="n"><span title="typing.Optional">Optional</span></span><span class="p">[</span><span class="n"><span title="str">str</span></span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">save_shape_model</span><span class="p">(</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">output</span><span class="p">:</span> <span class="n"><span title="typing.Optional">Optional</span></span><span class="p">[</span><span class="n"><span title="str">str</span></span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">save</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">True</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -1385,6 +1382,68 @@ by loading the shape model and potentially creating plots.</p>
 )          –
           <div class="doc-md-description">
             <p>Matlotlib axis with the figure.</p>
+          </div>
+        </li>
+    </ul>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="src.roman_lcs.RomanMachine.plot_prf_model" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">plot_prf_model</span>
+
+
+</h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">plot_prf_model</span><span class="p">(</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">ax</span><span class="p">:</span> <span class="n"><span title="typing.Optional">Optional</span></span><span class="p">[</span><span class="n"><span title="matplotlib.axes.Axes">Axes</span></span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">hires</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">False</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><span title="matplotlib.axes.Axes">Axes</span></span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Plot the Point Response Function (PRF) model for the current RomanMachine instance.</p>
+<p>This function visualizes the PRF either at high resolution (supersampled) or at the
+native pixel sampling, depending on the <code>hires</code> flag. The PRF is computed using the
+spline basis and current PSF weights, and displayed as a color mesh or scatter plot.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <ul>
+        <li class="doc-section-item field-body">
+            <b><code>ax</code></b>
+              (<code><span title="typing.Optional">Optional</span>[<span title="matplotlib.axes.Axes">Axes</span>]</code>, default:
+                  <code>None</code>
+)
+          –
+          <div class="doc-md-description">
+            <p>Matplotlib axis to plot on. If None, a new figure and axis will be created.</p>
+          </div>
+        </li>
+        <li class="doc-section-item field-body">
+            <b><code>hires</code></b>
+              (<code><span title="bool">bool</span></code>, default:
+                  <code>False</code>
+)
+          –
+          <div class="doc-md-description">
+            <p>If True, plot a supersampled PRF model. If False, plot at the native pixel sampling.</p>
+          </div>
+        </li>
+    </ul>
+
+
+<p><span class="doc-section-title">Returns:</span></p>
+    <ul>
+        <li class="doc-section-item field-body">
+<b><code>ax</code></b> (              <code><span title="matplotlib.axes.Axes">Axes</span></code>
+)          –
+          <div class="doc-md-description">
+            <p>The matplotlib axis containing the PRF plot.</p>
           </div>
         </li>
     </ul>
