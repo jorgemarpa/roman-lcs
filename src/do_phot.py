@@ -53,7 +53,7 @@ def do_target_photometry(
     # get list of FITS file paths to load into Machine
     ff = sorted(
         glob(
-            f"{PATH}/simulated_image_data/rimtimsim_WFI_lvl02_{FILTER}_SCA{SCA:02}_field{FIELD:02}_rampfitted_exposureno_*_sim.fits"
+            f"{PATH}/simulated_image_data_fixed/rimtimsim_WFI_lvl02_{FILTER}_SCA{SCA:02}_field{FIELD:02}_rampfitted_exposureno_*_sim.fits"
         )
     )
     # parPATH = "/Volumes/JorgeMarpa-2T/trexs/dryrun_01/"
@@ -87,7 +87,13 @@ def do_target_photometry(
         f"Targeting photometry to ID {target} RA {cutout_center[0]} Dec {cutout_center[1]}."
     )
     # get cutout origin
-    rcube = RomanCuts(field=FIELD, sca=SCA, filter=FILTER, file_list=ff[:2])
+    rcube = RomanCuts(
+        field=FIELD,
+        sca=SCA,
+        filter=FILTER,
+        file_list=ff[:2],
+        file_version="1.1",
+    )
     rcube.get_all_wcs()
     pix_center = rcube.wcss[0].all_world2pix(cutout_center[0], cutout_center[1], 0)
     cutout_origin = np.array(pix_center) - cutout_size / 2
@@ -160,6 +166,7 @@ def do_target_photometry(
             sources_flux_column="flux",
             cutout_size=cutout_size,
             cutout_center=cutout_center,
+            file_version="1.1",
         )
     except Exception as e:
         log.error("Could not start RomanMachine.")
@@ -177,7 +184,7 @@ def do_target_photometry(
         f"{DATPATH}/prf_models/"
         f"roman_WFI_{mac.meta['READMODE']}_{mac.meta['FILTER']}"
         f"_{mac.meta['FIELD']}_{mac.meta['DETECTOR']}_shape_model_cad{0}"
-        f"_center_v2.fits"
+        f"_center_v3.fits"
     )
     try:
         mac.load_shape_model(
@@ -203,7 +210,7 @@ def do_target_photometry(
     # save LCs to fits files
     for i, k in enumerate(targets_idx):
         metadata = mac.meta.copy()
-        metadata["FILEVER"] = ("2.0", "File version")
+        metadata["FILEVER"] = ("2.2", "File version")
         metadata["INSTRUME"] = "WFI"
         metadata["SICBROID"] = mac.sources["sicbro_id"].iloc[k]
         metadata["RADESYS"] = "ICRS"
@@ -245,7 +252,7 @@ def do_target_photometry(
             "quality": quality,
         }
         fid = f"{metadata['SICBROID']:08}"
-        lc_dir = f"{DATPATH}/lcs_v2/{fid[:5]}"
+        lc_dir = f"{DATPATH}/lcs_v2.2/{fid[:5]}"
         if not os.path.isdir(lc_dir):
             os.makedirs(lc_dir)
 
@@ -310,6 +317,8 @@ if __name__ == "__main__":
 
     log.info(args)
 
+    tstart = datetime.now()
+
     exit = do_target_photometry(
         target=args.target,
         FIELD=3,
@@ -323,5 +332,5 @@ if __name__ == "__main__":
     )
 
     with open(f"../logs/photometry_{args.filter}_cutout.log", "a") as f:
-        f.write(f"{datetime.now()} - Target {args.target} exit code: {exit}\n")
+        f.write(f"{tstart} - {datetime.now()} - Target {args.target} exit code: {exit}\n")
     log.info(f"Photometry done for target {args.target} with exit code {exit}.")

@@ -171,6 +171,7 @@ class RomanMachine(Machine):
         cutout_size: int = 32,
         cutout_center: Union[Tuple[float, float], Tuple[int, int]] = (0, 0),
         sources: Optional[pd.DataFrame] = None,
+        file_version: str = "1.0",
         **kwargs,
     ) -> "RomanMachine":
         """
@@ -231,6 +232,7 @@ class RomanMachine(Machine):
             fname,
             cutout_size=cutout_size,
             cutout_center=cutout_center,
+            file_version=file_version,
         )
         if ra.shape[0] > 1:
             dithered = True
@@ -461,6 +463,7 @@ class RomanMachine(Machine):
         table.header["FIELD"] = (self.meta["FIELD"], "Field")
         table.header["DETECTOR"] = (self.meta["DETECTOR"], "Instrument detector")
         table.header["FILTER"] = (self.meta["FILTER"], "Instrument filter")
+        table.header["DATAORG"] = ("image", "Data source used to fit the PRF model")
 
         table.header["JD-OBS"] = (self.time[0], "JD of observation")
         table.header["n_rknots"] = (
@@ -599,8 +602,8 @@ class RomanMachine(Machine):
             _, ax = plt.subplots(1, figsize=(7, 7))
 
         if hires:
-            dra = np.linspace(-1.5, 1.5, 500)
-            ddec = np.linspace(-1.5, 1.5, 500)
+            dra = np.linspace(-self.rmax, self.rmax, 200)
+            ddec = np.linspace(-self.rmax, self.rmax, 200)
             dra, ddec = np.meshgrid(dra, ddec)
         else:
             dra = self.source_mask.multiply(self.dra.to("arcsec").value).data
@@ -621,7 +624,7 @@ class RomanMachine(Machine):
         model = 10 ** Ap.dot(self.psf_w)
         model = model.reshape(dra.shape)
 
-        cmap = simple_norm(model, "asinh", percent=99.9)
+        cmap = simple_norm(model, "log", percent=99)
         if hires:
             cbar = ax.pcolormesh(dra, ddec, model, norm=cmap)
             ax.set_title(f"Super Sampled PRF {self.meta['FILTER']}")
@@ -634,8 +637,6 @@ class RomanMachine(Machine):
         plt.colorbar(cbar, ax=ax, shrink=0.8)
         ax.set_xlabel("$\Delta$ R.A. [arcsec]")
         ax.set_ylabel("$\Delta$ Decl [arcsec]")
-        ax.set_xlim(-1, 1)
-        ax.set_ylim(-1, 1)
         ax.set_aspect("equal")
 
         return ax
@@ -681,10 +682,6 @@ class RomanMachine(Machine):
         ax.grid(True, which="major", axis="both", ls="-", color="w", alpha=0.7)
         ax.set_xlabel("R.A. [hh:mm]")
         ax.set_ylabel("Decl. [deg]")
-        ax.set_xlim(
-            self.column[frame_index].min() - 4, self.column[frame_index].max() + 4
-        )
-        ax.set_ylim(self.row[frame_index].min() - 4, self.row[frame_index].max() + 4)
 
         ax.set_title(
             f"{self.meta['MISSION']} | {self.meta['DETECTOR']} | {self.meta['FILTER']}\n"
@@ -699,14 +696,14 @@ class RomanMachine(Machine):
 
         if sources:
             # marker size correlates with source magnitude
-            size = self.sources.loc[:, self.meta["FILTER"]].values
-            size = np.exp(1.5 / ((size - 14) / (10)))
+            # size = self.sources.loc[:, self.meta["FILTER"]].values
+            # size = np.exp(0.1 / ((size - 1-) / (10)))
             ax.scatter(
                 scol,
                 srow,
                 c="tab:red",
                 marker="o",
-                s=size,
+                s=5,
                 linewidths=0.1,
                 alpha=0.8,
             )
@@ -980,6 +977,7 @@ def _load_file(
     fname: Union[str, List[str], np.ndarray],
     cutout_size: int = 32,
     cutout_center: Union[Tuple[int, int], Tuple[float, float]] = (0, 0),
+    file_version: str="1.0",
 ) -> Tuple[
     List[Any],
     np.ndarray,
@@ -1046,21 +1044,24 @@ def _load_file(
         raise ValueError(
             "`cutout_center` must be a tuple of two int values (row, column) or float (RA, Dec)."
         )
-    field = int(fname[0].split("_")[-5][5:])
-    sca = int(fname[0].split("_")[-6][3:])
-    filter = fname[0].split("_")[-7]
-    if "asdf" in fname[0]:
+    field = int(os.path.basename(fname[0]).split("_")[5][5:])
+    sca = int(os.path.basename(fname[0]).split("_")[4][3:])
+    filter = os.path.basename(fname[0]).split("_")[3]
+    if "asdf" in os.path.basename(fname[0]):
         format = "asdf"
-    elif "fits" in fname[0]:
+    elif "fits" in os.path.basename(fname[0]):
         format = "fits"
     else:
         raise ValueError("Input file is not one of 'asdf' or 'fits'.")
+
     rcube = RomanCuts(
-        field=field, sca=sca, filter=filter, file_list=fname, file_format=format
+        field=field, sca=sca, filter=filter, file_list=fname, file_format=format,
+        file_version=file_version,
     )
     rcube.make_cutout(
         rowcol=rowcol, radec=radec, size=(cutout_size, cutout_size), dithered=dithered
     )
+    log.info("Cutout made...")
 
     # put row,col and ra,dec into 3D arrasy [ntimes, axis1, axis2]
     if dithered:
