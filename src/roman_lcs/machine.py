@@ -19,6 +19,7 @@ from .utils import (
     solve_linear_model,
     sparse_lessthan,
     threshold_bin,
+    weighted_std,
 )
 
 
@@ -394,7 +395,7 @@ class Machine(object):
 
         self.radius = self.source_mask.multiply(self.r).max(axis=1).toarray().ravel()
         self.radius[self.radius < self.pixel_scale.value] = (
-            self.pixel_scale.value * 1.25
+            self.pixel_scale.value * 1.5
         )
         if sparse.issparse(self.r):
             self.source_mask = sparse_lessthan(self.r, self.radius)
@@ -512,32 +513,38 @@ class Machine(object):
         self.uncontaminated_source_mask.eliminate_zeros()
         return
 
-    def _get_centroids(self) -> None:
+    def _get_centroids(self):
         """
         Find the ra and dec centroid of the image, at each time.
         """
         # centroids are astropy quantities
         self.ra_centroid = np.zeros(self.nt)
         self.dec_centroid = np.zeros(self.nt)
-        dra_m = self.uncontaminated_source_mask.multiply(self.dra).data
-        ddec_m = self.uncontaminated_source_mask.multiply(self.ddec).data
+        self.ra_centroid_err = np.zeros(self.nt)
+        self.dec_centroid_err = np.zeros(self.nt)
         for t in range(self.nt):
-            wgts = self.uncontaminated_source_mask.multiply(
+            # update sparse arrays due to offsets
+            self._update_delta_arrays(frame_index=t)
+
+            dra_m = self.source_mask.multiply(self.dra).data
+            ddec_m = self.source_mask.multiply(self.ddec).data
+            
+            wgts = self.source_mask.multiply(
                 np.sqrt(np.abs(self.flux[t]))
             ).data
             # mask out non finite values and background pixels
             k = (np.isfinite(wgts)) & (
-                self.uncontaminated_source_mask.multiply(self.flux[t]).data > 100
+                self.source_mask.multiply(self.flux[t]).data > 10
             )
             self.ra_centroid[t] = np.average(dra_m[k], weights=wgts[k])
             self.dec_centroid[t] = np.average(ddec_m[k], weights=wgts[k])
+            self.ra_centroid_err[t] = weighted_std(dra_m[k], weights=wgts[k], ddof=0)
+            self.dec_centroid_err[t] = weighted_std(ddec_m[k], weights=wgts[k], ddof=0)
         del dra_m, ddec_m
-        self.ra_centroid *= u.deg
-        self.dec_centroid *= u.deg
-        self.ra_centroid_avg = self.ra_centroid.mean()
-        self.dec_centroid_avg = self.dec_centroid.mean()
-
-        return
+        self.ra_centroid = (self.ra_centroid*u.deg).to("arcsec")
+        self.dec_centroid = (self.dec_centroid*u.deg).to("arcsec")
+        self.ra_centroid_err = (self.ra_centroid_err*u.deg).to("arcsec")
+        self.dec_centroid_err = (self.dec_centroid_err*u.deg).to("arcsec")
 
     def build_shape_model(
         self,

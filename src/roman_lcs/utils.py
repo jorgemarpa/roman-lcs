@@ -10,6 +10,9 @@ import astropy.units as u
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib import animation, colors, patches
+from astropy.visualization import simple_norm
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from patsy import dmatrix
@@ -775,7 +778,7 @@ def to_fits(
         default = {
             "ORIGIN": "Unofficial data product",
             "DATE": datetime.datetime.now().strftime("%Y-%m-%d"),
-            "CREATOR": "trexs-roman-lcs.to_fits()",
+            "CREATOR": "trexs-roman-lcs.to_fits",
             "PROCVER": str(__version__),
         }
 
@@ -785,7 +788,7 @@ def to_fits(
                 log.info("Value for {} is None.".format(kw))
 
         for kw in extra_data:
-            if isinstance(extra_data[kw], (str, float, int, bool, type(None))):
+            if isinstance(extra_data[kw], (str, float, int, bool, type(None), tuple)):
                 hdu.header["{}".format(kw).upper()] = extra_data[kw]
                 if extra_data[kw] is None:
                     log.info("Value for {} is None.".format(kw))
@@ -802,7 +805,7 @@ def to_fits(
                 fits.Column(
                     name="TIME",
                     format="D",
-                    unit=u.day.to_string(),
+                    unit="d",
                     array=data["time"],
                 )
             )
@@ -811,7 +814,7 @@ def to_fits(
                 fits.Column(
                     name="FLUX",
                     format="E",
-                    unit=(u.electron / u.second).to_string(),
+                    unit="e-/s",
                     array=data["flux"],
                 )
             )
@@ -820,7 +823,7 @@ def to_fits(
                 fits.Column(
                     name="FLUX_ERR",
                     format="E",
-                    unit=(u.electron / u.second).to_string(),
+                    unit="e-/s",
                     array=data["flux_err"],
                 )
             )
@@ -832,10 +835,19 @@ def to_fits(
             cols.append(fits.Column(name="QUALITY", format="J", array=data["quality"]))
         for kw in extra_data:
             if isinstance(extra_data[kw], (np.ndarray, list)):
+                if "flux" in kw.lower():
+                    unit = "e-/s"
+                elif "ra" in kw.lower():
+                    unit = "deg"
+                elif "dec" in kw.lower():
+                    unit = "deg"
+                else:
+                    unit = None
                 cols.append(
                     fits.Column(
                         name="{}".format(kw).upper(),
                         format=typedir[extra_data[kw].dtype.type],
+                        unit=unit,
                         array=extra_data[kw],
                     )
                 )
@@ -916,3 +928,301 @@ def matrix_solve(model, data, data_err=None, power=2.0):
     w = np.linalg.solve(A.T.dot(A), A.T.dot(x))
 
     return w
+
+def weighted_std(values, weights, ddof=0):
+    """
+    Calculates the weighted standard deviation for a population or a sample.
+
+    Parameters:
+    values (array_like): The data array.
+    weights (array_like): The weights array, must be the same shape as values.
+    ddof (int): Delta Degrees of Freedom.
+                Use 0 for population standard deviation (default).
+                Use 1 for sample standard deviation (Bessel's correction).
+
+    Returns:
+    float: The weighted standard deviation.
+    """
+    # Calculate the weighted mean
+    weighted_mean = np.average(values, weights=weights)
+
+    # Calculate the weighted variance components
+    numerator = np.sum(weights * (values - weighted_mean) ** 2)
+    sum_of_weights = np.sum(weights)
+
+    if ddof == 0:
+        # Population weighted standard deviation
+        weighted_variance = numerator / sum_of_weights
+    elif ddof == 1:
+        # Sample weighted standard deviation (Bessel's correction)
+        # Formula: sum(w * (x - mean)^2) / (sum(w) - 1) is not always correct.
+        # The correct unbiased sample variance depends on the nature of weights.
+        # A common approximation for reliability weights is:
+        N = len(weights)
+        if N <= 1:
+            return np.nan  # Cannot calculate sample std with 1 or fewer observations
+        weighted_variance = numerator / (sum_of_weights * (N / (N - 1)))
+        # Note: A more standard statistical formula might be used depending on context.
+    else:
+        raise ValueError("ddof can only be 0 (population) or 1 (sample).")
+
+    # Standard deviation is the square root of variance
+    weighted_stdev = np.sqrt(weighted_variance)
+
+    return weighted_stdev
+
+def plot_img_aperture(
+    img: np.ndarray,
+    aperture_mask: Optional[np.ndarray] = None,
+    cbar: bool = True,
+    ax: Optional[plt.Axes] = None,
+    corner: Tuple[int, int] = (0, 0),
+    marker: Optional[Tuple[float, float]] = None,
+    title: str = "",
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+    cnorm: Optional[colors.Normalize] = None,
+):
+    """
+    Plots an image with an optional aperture mask.
+
+    This function displays an image, optionally overlaying an aperture mask, and
+    provides several customization options such as color scaling, title, and axis control.
+
+    Parameters
+    ----------
+    img : 2D array
+        The image data to be plotted, typically a 2D array or matrix representing pixel values.
+    aperture_mask : 2D array, default=None
+        A binary mask (same shape as `img`) indicating the aperture region to be overlaid on the image.
+    cbar : bool, default=True
+        Whether to display a color bar alongside the plot.
+    ax : matplotlib.axes.Axes, default=None
+        The axes object where the plot will be drawn. If not provided, a new axes will be created.
+    corner : list of two ints, default=[0, 0]
+        The (row, column) coordinates of the lower left corner of the image.
+    marker : tuple of float, default=None
+        The (row, column) coordinates at which to plot a marker in the figure.
+        This can be used to plot the position of the moving object.
+    title : str, default=""
+        Title of the plot. If None, no title will be shown.
+    vmin : float, optional, default=None
+        Minimum value for color scale. If None, the 3%-percentile is used.
+    vmax : float, optional, default=None
+        Maximum value for color scale. If None, the 97%-percentile is used.
+    cnorm : optional, default=None
+        Color matplotlib normalization object (e.g. astropy.visualization.simple_norm). If provided,
+        then `vmax` and `vmin` are not used.
+
+    Returns
+    -------
+    ax : matplotlib.axes.Axes
+        The axes object containing the plot.
+    """
+
+    # Initialise ax
+    if ax is None:
+        _, ax = plt.subplots()
+
+    # Define the x and y axis tick labels when using plt.imshow() using `corner`
+    # and the image shape
+    extent = (
+        corner[1] - 0.5,
+        corner[1] + img.shape[1] - 0.5,
+        corner[0] - 0.5,
+        corner[0] + img.shape[0] - 0.5,
+    )
+
+    # Define vmin and vmax
+    if vmin is None and vmax is None and cnorm is None:
+        vmin, vmax = np.nanpercentile(img.ravel(), [3, 97])
+
+    # Plot image, colorbar and marker
+    im = ax.imshow(
+        img,
+        cmap="viridis",
+        vmin=vmin,
+        vmax=vmax,
+        norm=cnorm,
+        rasterized=True,
+        origin="lower",
+        extent=extent,
+    )
+    if cbar:
+        plt.colorbar(im, location="right", shrink=0.8, label="Flux [e-/s]")
+    if marker is not None:
+        ax.scatter(marker[1], marker[0], marker="x", c="deeppink", alpha=1, s=50)
+
+    ax.set_aspect("equal", "box")
+    ax.set_title(title)
+
+    # Plot aperture mask
+    if aperture_mask is not None:
+        row, col = np.mgrid[
+            corner[0] : corner[0] + img.shape[0], corner[1] : corner[1] + img.shape[1]
+        ]
+        for i, pi in enumerate(row[:, 0]):
+            for j, pj in enumerate(col[0, :]):
+                if aperture_mask[i, j]:
+                    # print("here")
+                    rect = patches.Rectangle(
+                        xy=(pj - 0.5, pi - 0.5),
+                        width=1,
+                        height=1,
+                        color="deeppink",
+                        fill=False,
+                        # hatch="//",
+                        alpha=0.8,
+                    )
+                    ax.add_patch(rect)
+
+    ax.set_xlabel("Pixel Column")
+    ax.set_ylabel("Pixel Row")
+
+    return ax
+
+
+def animate_cube(
+    cube: np.ndarray,
+    aperture_mask: Optional[np.ndarray] = None,
+    corner: Union[Tuple, np.ndarray] = (0, 0),
+    ephemeris: Optional[np.ndarray] = None,
+    cadenceno: Optional[np.ndarray] = None,
+    time: Optional[np.ndarray] = None,
+    interval: int = 200,
+    repeat_delay: int = 1000,
+    step: int = 1,
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+    cnorm: bool = False,
+    suptitle: str = "",
+):
+    """
+    Creates an animated visualization of a 3D image cube, with an optional aperture mask and
+    other customization options.
+
+    This function animates the slices of a 3D image cube, optionally overlaying an aperture mask,
+    and provides controls for animation speed, title, and tracking information.
+
+    Parameters
+    ----------
+    cube : 3D array
+        A 3D array representing the image cube (e.g., a stack of 2D images over time).
+    aperture_mask : 2D or 3D array, optional
+        A binary mask (same shape or a 2D slice of `cube`) to overlay on each frame of the animation.
+        If a 2D mask is passed, it will be repeated for all times.
+    corner : list of two ints or 2D array, default=[0, 0]
+        The (row, column) coordinates of the lower left corner of the image.
+    ephemeris : 2D array, optional, default=None
+        A 2D array of object positions (row, column) to be displayed on the plot.
+        For proper display of object position, if `corner` is [0, 0] then `ephemeris` needs to be relative to `corner`.
+        If `corner` is provided, `ephemeris` needs to be absolute.
+        If None, no tracking information is shown.
+    cadenceno : int, optional, default=None
+        The cadence number of the frames, used for information display.
+    time : array-like, optional, default=None
+        Array of time values corresponding to the slices in the cube.
+    interval : int, default=200
+        The time interval (in milliseconds) between each frame of the animation.
+    repeat_delay : int, default=1000
+        The time delay (in milliseconds) before the animation restarts once it finishes.
+    step : int
+        Spacing between frames, i.e. plot every nth frame.
+    vmin : float, optional, default=None
+        Minimum value for color scale. If None, the 3%-percentile is used.
+    vmax : float, optional, default=None
+        Maximum value for color scale. If None, the 97%-percentile is used.
+    cnorm : optional, default=False
+        Whether to use asinh color normalization (from astropy.visualization.simple_norm).
+        This can be useful for cases when the moving object is too faint compared to other
+        features in the background. If provided, then `vmax` and `vmin` are not used.
+    suptitle : str, optional, default=""
+        A string to be used as the super title of the animation.
+        It can be used to provide additional context or information about the animated data,
+        for example the target name or observing sector/camera/ccd.
+
+    Returns
+    -------
+    ani : matplotlib.animation.FuncAnimation
+        The animation object that can be displayed or saved.
+    """
+
+    # Initialise figure and set title
+    fig, ax = plt.subplots()
+    fig.suptitle(suptitle)
+
+    if aperture_mask is None:
+        aperture_mask = np.repeat([None], len(cube), axis=0)
+    # If aperture_mask is 2D, repeat for all times.
+    elif aperture_mask.shape == cube.shape[1:]:
+        aperture_mask = np.repeat([aperture_mask], len(cube), axis=0)
+
+    if ephemeris is None:
+        ephemeris = np.repeat([None], len(cube), axis=0)
+    if cadenceno is None:
+        cadenceno = np.repeat([None], len(cube), axis=0)
+    if time is None:
+        time = np.repeat([None], len(cube), axis=0)
+
+    if cnorm:
+        norm = simple_norm(cube.ravel(), "asinh", percent=98)
+    elif vmin is None and vmax is None:
+        # Ignore warning that arises from all NaN values.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", message="All-NaN slice encountered", category=RuntimeWarning
+            )
+            vmin, vmax = np.nanpercentile(cube, [3, 97])
+
+    # If corner is list of two ints, repeat for all times.
+    if len(corner) == 2:
+        corner = np.repeat([corner], len(cube), axis=0)
+
+    # Plot first image in cube.
+    nt = 0
+    ax = plot_img_aperture(
+        cube[nt],
+        aperture_mask=aperture_mask[nt],
+        cbar=True,
+        ax=ax,
+        corner=corner[nt],
+        marker=ephemeris[nt],
+        title=f"CAD {cadenceno[nt]} | BTJD {time[nt]:.4f}",
+        vmin=vmin if not cnorm else None,
+        vmax=vmax if not cnorm else None,
+        cnorm=norm if cnorm else None,
+    )
+
+    # Define function for animation
+    def animate(nt):
+        ax.clear()
+        _ = plot_img_aperture(
+            cube[nt],
+            aperture_mask=aperture_mask[nt],
+            cbar=False,
+            ax=ax,
+            corner=corner[nt],
+            marker=ephemeris[nt],
+            title=f"CAD {cadenceno[nt]} | JD {time[nt]:.4f}",
+            vmin=vmin if not cnorm else None,
+            vmax=vmax if not cnorm else None,
+            cnorm=norm if cnorm else None,
+        )
+
+        return ()
+
+    # Prevent second figure from showing up in interactive mode
+    plt.close(ax.figure)  # type: ignore
+
+    # Create the animation
+    ani = animation.FuncAnimation(
+        fig,
+        animate,
+        frames=range(0, len(cube), step),
+        interval=interval,
+        blit=True,
+        repeat_delay=repeat_delay,
+        repeat=True,
+    )
+
+    return ani

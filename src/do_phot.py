@@ -49,6 +49,8 @@ def do_target_photometry(
     fit_blends: bool = False,
     nthreads: Optional[int] = None,
     blend_limit: Optional[float] = None,
+    image_version: str = "1.1",
+    prf_version: int = 3,
 ):
     # get list of FITS file paths to load into Machine
     ff = sorted(
@@ -92,7 +94,7 @@ def do_target_photometry(
         sca=SCA,
         filter=FILTER,
         file_list=ff[:2],
-        file_version="1.1",
+        file_version=image_version,
     )
     rcube.get_all_wcs()
     pix_center = rcube.wcss[0].all_world2pix(cutout_center[0], cutout_center[1], 0)
@@ -184,7 +186,7 @@ def do_target_photometry(
         f"{DATPATH}/prf_models/"
         f"roman_WFI_{mac.meta['READMODE']}_{mac.meta['FILTER']}"
         f"_{mac.meta['FIELD']}_{mac.meta['DETECTOR']}_shape_model_cad{0}"
-        f"_center_v3.fits"
+        f"_center_v{prf_version}.fits"
     )
     try:
         mac.load_shape_model(
@@ -201,16 +203,25 @@ def do_target_photometry(
     # so we can run parallel jobs without lowering performance too much
     try:
         with threadpool_limits(limits=nthreads, user_api="blas"):
-            mac.fit_prf_photometry(targets=targets_idx.tolist(), model_bkg=True)
+            mac.fit_prf_photometry(
+                targets=targets_idx.tolist(), model_bkg=True, do_aperture=True
+            )
     except Exception as e:
         log.error("Error during PRF fitting")
         log.error(f"Error: {e}")
         return 5
 
+    # update metadata
+    mac.meta["CREATOR"] = "TREXS-roman-lcs"
+    mac.meta["IMGVER"] = image_version
+    mac.meta["PRFVER"] = prf_version
+    mac.meta["IMGSIZE"] = str(mac.image_shape)
+    file_version = f"{image_version}.{prf_version}"
+
     # save LCs to fits files
     for i, k in enumerate(targets_idx):
         metadata = mac.meta.copy()
-        metadata["FILEVER"] = ("2.2", "File version")
+        metadata["FILEVER"] = (file_version, "File version")
         metadata["INSTRUME"] = "WFI"
         metadata["SICBROID"] = mac.sources["sicbro_id"].iloc[k]
         metadata["RADESYS"] = "ICRS"
@@ -228,7 +239,6 @@ def do_target_photometry(
 
         # replace nans and negatives with 0
         quality = np.zeros(mac.nt, dtype=int)
-        expnumber = mac.cadenceno
         flux = mac.targets_prf_flux[:, i]
         flux_err = mac.targets_prf_flux_err[:, i]
 
@@ -248,11 +258,18 @@ def do_target_photometry(
             "time": mac.time,
             "flux": flux,
             "flux_err": flux_err,
-            "cadenceno": expnumber,
+            "cadenceno": mac.cadenceno,
             "quality": quality,
         }
+        metadata["flux_ap"] = mac.targets_ap_flux[:, i]
+        metadata["flux_err_ap"] = mac.targets_ap_flux_err[:, i]
+        metadata["flfrcsap_ap"] = mac.aperture_metrics[:, i, 0]
+        metadata["crowdsap_ap"] = mac.aperture_metrics[:, i, 1]
+        metadata["centroid_ra"] = mac.targets_centroid[:, i, 0]
+        metadata["centroid_dec"] = mac.targets_centroid[:, i, 1]
+        
         fid = f"{metadata['SICBROID']:08}"
-        lc_dir = f"{DATPATH}/lcs_v2.2/{fid[:5]}"
+        lc_dir = f"{DATPATH}/lcs_v{file_version}/{fid[:5]}"
         if not os.path.isdir(lc_dir):
             os.makedirs(lc_dir)
 
@@ -299,6 +316,20 @@ if __name__ == "__main__":
         default=False,
         help="Fit blended objects to 'target' within 0.2 arcseconds.",
     )
+    parser.add_argument(
+        "--image-ver",
+        dest="image_ver",
+        type=str,
+        default="1.1",
+        help="Input image file version.",
+    )
+    parser.add_argument(
+        "--prf-ver",
+        dest="prf_ver",
+        type=str,
+        default="3",
+        help="PRF model version.",
+    )
     parser.add_argument("--log", dest="log", default=0, help="Logging level")
     args = parser.parse_args()
 
@@ -329,6 +360,8 @@ if __name__ == "__main__":
         fit_blends=args.fit_blends,
         blend_limit=args.blend_limit,
         nthreads=4,  # set to None to use all available threads
+        image_version=args.image_ver,
+        prf_version=args.prf_ver,
     )
 
     with open(f"../logs/photometry_{args.filter}_cutout.log", "a") as f:
