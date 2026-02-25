@@ -18,8 +18,8 @@ from scipy import ndimage, sparse
 from tqdm import tqdm
 
 from . import __version__
-from .machine import Machine
 from .aperture import *
+from .machine import Machine
 from .utils import _make_A_cartesian, _make_A_polar, solve_linear_model
 
 log = logging.getLogger(__name__)

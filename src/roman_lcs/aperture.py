@@ -8,8 +8,8 @@ Some this functions inputs and operate on a `Machine` object but we move them ou
 
 """
 
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 from scipy import optimize
 from tqdm import tqdm
 

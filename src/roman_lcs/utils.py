@@ -7,14 +7,14 @@ import warnings
 from typing import Any, Callable, List, Optional, Tuple, Union
 
 import astropy.units as u
+import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
-import matplotlib.pyplot as plt
-from matplotlib import animation, colors, patches
-from astropy.visualization import simple_norm
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
+from astropy.visualization import simple_norm
+from matplotlib import animation, colors, patches
 from patsy import dmatrix
 from scipy import optimize, sparse
 from scipy.ndimage import gaussian_filter1d
