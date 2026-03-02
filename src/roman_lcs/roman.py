@@ -11,7 +11,6 @@ import matplotlib.figure
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from astropy.io import fits
 from astropy.visualization import simple_norm
 from roman_cuts import RomanCuts
 from scipy import ndimage, sparse
@@ -20,6 +19,7 @@ from tqdm import tqdm
 from . import __version__
 from .aperture import *
 from .machine import Machine
+from .prf import RomanPRF
 from .utils import _make_A_cartesian, _make_A_polar, solve_linear_model
 
 log = logging.getLogger(__name__)
@@ -42,11 +42,6 @@ class RomanMachine(Machine):
         row: np.ndarray,
         cadenceno: Optional[np.ndarray] = None,
         wcs: Optional[Any] = None,
-        n_r_knots: int = 9,
-        n_phi_knots: int = 15,
-        cut_r: float = 0.15,
-        rmin: float = 0.02,
-        rmax: float = 0.8,
         sparse_dist_lim: int = 4,
         quality_mask: Optional[np.ndarray] = None,
         sources_flux_column: str = "flux",
@@ -125,11 +120,6 @@ class RomanMachine(Machine):
             sources,
             column,
             row,
-            n_r_knots=n_r_knots,
-            n_phi_knots=n_phi_knots,
-            cut_r=cut_r,
-            rmin=rmin,
-            rmax=rmax,
             sparse_dist_lim=sparse_dist_lim,
             sources_flux_column=sources_flux_column,
         )
@@ -359,39 +349,6 @@ class RomanMachine(Machine):
         self.ra_offset = (self.ra - self.ra[0]).mean(axis=1)
         self.dec_offset = (self.dec - self.dec[0]).mean(axis=1)
 
-    def _get_source_mask(
-        self,
-        source_flux_limit: float = 1,
-        reference_frame: int = 0,
-        iterations: int = 2,
-        plot: bool = False,
-    ) -> Optional[matplotlib.figure.Figure]:
-        """
-        Adapted version of `machine._get_source_mask()` that masks out saturated and
-        bright halo pixels in FFIs. See parameter descriptions in `Machine`.
-        """
-        fig = super()._get_source_mask(
-            source_flux_limit=source_flux_limit,
-            reference_frame=reference_frame,
-            iterations=iterations,
-            plot=plot,
-        )
-        # self._remove_bad_pixels_from_source_mask()
-        return fig
-
-    def _update_source_mask(
-        self, frame_index: int = 0, source_flux_limit: float = 1
-    ) -> None:
-        """
-        Adapted version of `machine._update_source_mask()` that masks out saturated and
-        bright halo pixels in FFIs. See parameter descriptions in `Machine`.
-        """
-        super()._update_source_mask(
-            frame_index=frame_index,
-            source_flux_limit=source_flux_limit,
-        )
-        # self._remove_bad_pixels_from_source_mask()
-
     def _remove_bad_pixels_from_source_mask(self) -> None:
         """
         Combines source_mask and uncontaminated_pixel_mask with saturated and bright
@@ -404,120 +361,22 @@ class RomanMachine(Machine):
         ).tocsr()
         self.uncontaminated_source_mask.eliminate_zeros()
 
-    def build_shape_model(
-        self,
-        flux_cut_off: float = 1,
-        frame_index: Union[str, int] = 0,
-        bin_data: bool = False,
-        plot: bool = False,
-        **kwargs,
-    ) -> Optional[matplotlib.figure.Figure]:
-        """
-        Adapted version of `machine.build_shape_model()` that masks out saturated and
-        bright halo pixels in FFIs. See parameter descriptions in `Machine`.
-        """
-        # call method from super calss `machine`
-        super().build_shape_model(
-            plot=False,
-            flux_cut_off=flux_cut_off,
-            frame_index=frame_index,
-            bin_data=bin_data,
-            **kwargs,
-        )
-        # include sat/halo pixels again into source_mask
-        # self._remove_bad_pixels_from_source_mask()
-        if plot:
-            return self.plot_shape_model(frame_index=frame_index, bin_data=bin_data)
-        return None
-
-    def save_shape_model(self, output: Optional[str] = None, save: bool = True) -> None:
-        """
-        Saves the weights of a PRF fit to disk.
-
-        Parameters
-        ----------
-        output : str, None
-            Output file name. If None, one will be generated.
-        """
-        # asign a file name
-        if output is None:
-            output = f"./{self.meta['MISSION']}_shape_model_{self.meta['FILTER']}_{self.meta['DETECTOR']}.fits"
-
-        # create data structure (DataFrame) to save the model params
-        table = fits.BinTableHDU.from_columns(
-            [
-                fits.Column(
-                    name="psf_w",
-                    array=self.psf_w,
-                    format="D",
-                )
-            ]
-        )
-        # include metadata and descriptions
-        table.header["OBJECT"] = ("PRF shape", "PRF shape parameters")
-        table.header["DATATYPE"] = ("SimImage", "Type of data used to fit shape model")
-        table.header["ORIGIN"] = ("PSFmachine.RomanMachine", "Software of origin")
-        table.header["VERSION"] = (__version__, "Software version")
-        table.header["TELESCOP"] = (self.meta["TELESCOP"], "Telescope name")
-        table.header["MISSION"] = (self.meta["MISSION"], "Mission name")
-
-        table.header["FIELD"] = (self.meta["FIELD"], "Field")
-        table.header["DETECTOR"] = (self.meta["DETECTOR"], "Instrument detector")
-        table.header["FILTER"] = (self.meta["FILTER"], "Instrument filter")
-        table.header["DATAORG"] = ("image", "Data source used to fit the PRF model")
-
-        table.header["JD-OBS"] = (self.time[0], "JD of observation")
-        table.header["n_rknots"] = (
-            self.n_r_knots,
-            "Number of knots for spline basis in radial axis",
-        )
-        table.header["n_pknots"] = (
-            self.n_phi_knots,
-            "Number of knots for spline basis in angle axis",
-        )
-        table.header["rmin"] = (self.rmin, "Minimum value for knot spacing")
-        table.header["rmax"] = (self.rmax, "Maximum value for knot spacing")
-        table.header["cut_r"] = (
-            self.cut_r,
-            "Radial distance to remove angle dependency",
-        )
-        # spline degree is hardcoded in `_make_A_polar` implementation.
-        table.header["spln_deg"] = (3, "Degree of the spline basis")
-        table.header["norm"] = (str(False), "Normalized model")
-
-        if save:
-            table.writeto(output, checksum=True, overwrite=True)
-            return
-        else:
-            return table
-
-    def load_shape_model(
+    def load_prf_model(
         self,
         input: Optional[str] = None,
         plot: bool = False,
-        source_flux_limit: float = 20,
-        flux_cut_off: float = 0.01,
     ) -> Optional[matplotlib.figure.Figure]:
         """
-        Load and process a shape model for the sources.
-
-        This method reads a shape model from the specified input source, applies any necessary
-        processing, and optionally generates a diagnostic plot of the shape model. The function
-        may also filter out low-flux pixels based on the provided cutoff value.
+        Load and process a prf model for the sources.
 
         Parameters
         ----------
         input : str, optional
             The path to the shape model file or other input source. If None, defaults to a predefined
             shape model location.
-
         plot : bool, optional, default=False
             Whether to display a diagnostic plot of the loaded shape model. If set to True, the plot
             will be shown upon loading the model.
-
-        flux_cut_off : float, optional, default=0.01
-            The minimum flux value below which sources will be excluded from the model. This can help
-            remove noise or irrelevant data during processing.
 
         Returns
         -------
@@ -526,58 +385,54 @@ class RomanMachine(Machine):
             by loading the shape model and potentially creating plots.
         """
         # check if file exists and is the right format
-        if not os.path.isfile(input):
-            raise FileNotFoundError(f"No shape file: {input}")
+        self.prf_model = RomanPRF(
+            file_name=input, sca=self.meta["SCA"], filter=self.meta["FILTER"]
+        )
         log.info(f"Loading shape model from {input}")
-
-        # create source mask and uncontaminated pixel mask
-        # if not hasattr(self, "source_mask"):
-        self._get_source_mask(
-            source_flux_limit=source_flux_limit,
-            plot=False,
-            reference_frame=self.ref_frame,
-            iterations=1,
-        )
-
-        # open file
-        hdu = fits.open(input)
-        # check if shape parameters are for correct mission, quarter, and channel
-        if (
-            hdu[1].header["MISSION"].strip().lower()
-            != self.meta["MISSION"].strip().lower()
-        ):
-            raise ValueError("Wrong shape model: file is for mission Roman")
-        if int(hdu[1].header["FIELD"]) != self.meta["FIELD"]:
-            raise ValueError("Wrong field")
-        if hdu[1].header["DETECTOR"].strip() != self.meta["DETECTOR"]:
-            raise ValueError("Wrong DETECTOR")
-
-        # load model hyperparameters and weights
-        self.n_r_knots = hdu[1].header["n_rknots"]
-        self.n_phi_knots = hdu[1].header["n_pknots"]
-        self.rmin = hdu[1].header["rmin"]
-        self.rmax = hdu[1].header["rmax"]
-        self.cut_r = hdu[1].header["cut_r"]
-        self.psf_w = hdu[1].data["psf_w"]
-        # read from header if weights come from a normalized model.
-        self.normalized_shape_model = (
-            True if hdu[1].header.get("norm") in ["True", "T", 1] else False
-        )
-        del hdu
-
-        # create mean model, but PRF shapes from FFI are in pixels! and TPFMachine
-        # work in arcseconds
-        self._get_mean_model()
-        # remove background pixels and recreate mean model
-        # self._update_source_mask_remove_bkg_pixels(flux_cut_off=flux_cut_off)
-        # self._remove_bad_pixels_from_source_mask()
-
         if plot:
-            return self.plot_shape_model(frame_index=self.ref_frame, clean=True)
+            return self.plot_prf_model(hires=True, stretch="log")
+        return
+
+    def draw_scene(self, frame_index: int = 0) -> None:
+        """
+        Convenience function to make the scene model
+        """
+        # check of prf interpolation model exist
+        if not hasattr(self, "prf_model"):
+            raise AttributeError(
+                "No PRF interpolation model loaded, run `self.load_prf_model` first"
+            )
+
+        # get the pixel grid for current frame
+        col = self.column[frame_index]
+        row = self.row[frame_index]
+
+        # get source pixel locs for current frame
+        srow, scol = self.pixel_coordinates(frame_index=frame_index)
+
+        # evaluate PRF at each source position
+        scene_model = []
+        for sdx in range(self.nsources):
+            eval = self.prf_model.evaluate_from_position(
+                center=(srow[sdx], scol[sdx]),
+                corner=(row.min(), col.min()),
+                shape=self.image_shape,
+            )[-1]
+            # eval = np.rot90(eval.reshape(self.image_shape), k=1).ravel()
+            scene_model.append(eval.ravel())
+        self.scene_model = np.array(scene_model)
+        # we assume the at least one source will be fully in the cutout, so we 
+        # normalize the model to that sum
+        self.scene_model /= self.scene_model.sum(axis=1).max()
+        # then scale by PRF normalization factor
+        self.scene_model *= self.prf_model.prf_sum
         return
 
     def plot_prf_model(
-        self, ax: Optional[matplotlib.axes.Axes] = None, hires: bool = False, stretch: str = "linear",
+        self,
+        ax: Optional[matplotlib.axes.Axes] = None,
+        hires: bool = False,
+        stretch: str = "linear",
     ) -> matplotlib.axes.Axes:
         """
         Plot the Point Response Function (PRF) model for the current RomanMachine instance.
@@ -602,81 +457,77 @@ class RomanMachine(Machine):
         if ax is None:
             fig = plt.figure(figsize=(7, 7))
             ax_main = fig.add_subplot()
-            if hires:
-                # Create marginal Axes
-                # ax_histx (top): positioned above the main axes
-                ax_histx = ax_main.inset_axes([0, 1.05, 1, 0.25], sharex=ax_main) # [left, bottom, width, height]
-                # ax_histy (right): positioned to the right of the main axes
-                ax_histy = ax_main.inset_axes([1.05, 0, 0.25, 1], sharey=ax_main)
+            # Create marginal Axes
+            # ax_histx (top): positioned above the main axes
+            ax_histx = ax_main.inset_axes(
+                [0, 1.05, 1, 0.25], sharex=ax_main
+            )  # [left, bottom, width, height]
+            # ax_histy (right): positioned to the right of the main axes
+            ax_histy = ax_main.inset_axes([1.05, 0, 0.25, 1], sharey=ax_main)
 
         # widen the annotated type so mypy accepts both QuadMesh and PathCollection
         cbar: Any = None
 
         if hires:
-            dra = np.linspace(-self.rmax, self.rmax, 100)
-            ddec = np.linspace(-self.rmax, self.rmax, 100)
-            dra, ddec = np.meshgrid(dra, ddec)
+            dcol = np.linspace(0, self.image_shape[1], self.image_shape[1] * 6)
+            drow = np.linspace(0, self.image_shape[0], self.image_shape[0] * 6)
+            shape = (self.image_shape[0] * 6, self.image_shape[1] * 6)
         else:
-            dra = self.source_mask.multiply(self.dra.to("arcsec").value).data
-            ddec = self.source_mask.multiply(self.ddec.to("arcsec").value).data
+            dcol = np.arange(0, self.image_shape[1], dtype=float)
+            drow = np.arange(0, self.image_shape[0], dtype=float)
+            shape = self.image_shape
+        dcol, drow = np.meshgrid(dcol, drow)
+        dcol -= self.image_shape[1] / 2
+        drow -= self.image_shape[0] / 2
 
-        r = np.hypot(dra, ddec)
-        phi = np.arctan2(ddec, dra)
-
-        Ap = _make_A_polar(
-            phi.ravel(),
-            r.ravel(),
-            rmin=self.rmin,
-            rmax=self.rmax,
-            cut_r=self.cut_r,
-            n_r_knots=self.n_r_knots,
-            n_phi_knots=self.n_phi_knots,
-        )
-        model = 10 ** Ap.dot(self.psf_w)
-        model = model.reshape(dra.shape)
+        model = self.prf_model.evaluate_from_array(dcol.ravel(), drow.ravel()).reshape(
+            shape
+        ).T
 
         cmap = simple_norm(model, stretch, percent=99.9)
         if hires:
-            fig.suptitle(f"Super Sampled PRF {self.meta['FILTER']}", y=1.1)
-
-            cbar = ax_main.pcolormesh(dra, ddec, model, norm=cmap)
-            ax_histx.plot(dra[0], model.mean(axis=0))
-            ax_histy.plot(model.mean(axis=1), ddec[:, 0])
-            ax_histx.tick_params(
-                axis="both",
-                which="both",
-                bottom=False,
-                top=False,
-                left=False,
-                right=False,
-                labelbottom=False,
-                labelleft=False,
-            )
-            ax_histy.tick_params(
-                axis="both",
-                which="both",
-                bottom=False,
-                top=False,
-                left=False,
-                right=False,
-                labelbottom=False,
-                labelleft=False,
-            )
-            plt.colorbar(cbar, ax=ax_main, shrink=0.7, location="bottom")
+            ax_main.set_title(f"Super Sampled PRF | {self.meta['FILTER']}", y=1.1)
         else:
-            ax_main.set_title(f"PRF {self.meta['FILTER']}")
-            mask = r < self.rmax
-            cbar = ax_main.scatter(dra[mask], ddec[mask], c=model[mask], norm=cmap, s=5)
-            plt.colorbar(cbar, ax=ax_main, shrink=0.7, location="right")
-        
-        ax_main.set_xlabel("$\Delta$ R.A. [arcsec]")
-        ax_main.set_ylabel("$\Delta$ Decl [arcsec]")
+            ax_main.set_title(f"PRF in Cutout Pixel Grid | {self.meta['FILTER']}")
+
+        cbar = ax_main.pcolormesh(
+            dcol * self.pixel_scale.value,
+            drow * self.pixel_scale.value,
+            model,
+            norm=cmap,
+        )
+        ax_histx.plot(dcol[0] * self.pixel_scale.value, model.mean(axis=0))
+        ax_histy.plot(model.mean(axis=1), drow[:, 0] * self.pixel_scale.value)
+        ax_histx.tick_params(
+            axis="both",
+            which="both",
+            bottom=False,
+            top=False,
+            left=False,
+            right=False,
+            labelbottom=False,
+            labelleft=False,
+        )
+        ax_histy.tick_params(
+            axis="both",
+            which="both",
+            bottom=False,
+            top=False,
+            left=False,
+            right=False,
+            labelbottom=False,
+            labelleft=False,
+        )
+        plt.colorbar(cbar, ax=ax_main, shrink=0.7, location="bottom", label="Normalized Flux")
+        ax_main.set_xlabel("$\Delta$ Column [arcsec]")
+        ax_main.set_ylabel("$\Delta$ Row [arcsec]")
         ax_main.set_aspect("equal")
 
         return ax
 
     def plot_image(
         self,
+        data: str = "image",
         ax: Optional[matplotlib.axes.Axes] = None,
         sources: bool = False,
         frame_index: int = 0,
@@ -702,12 +553,23 @@ class RomanMachine(Machine):
             _ = plt.figure(figsize=(10, 10))
             ax = plt.subplot(projection=self.WCSs[frame_index], label="overlays")
 
-        norm = simple_norm(self.flux[frame_index].ravel(), "asinh", percent=95)
+        if data == "image":
+            to_plot = self.flux_3d[frame_index]
+            title = "Image"
+        elif data == "scene":
+            self.draw_scene(frame_index=frame_index)
+            to_plot = self.scene_model.T.dot(self.source_flux_estimates).reshape(
+                self.image_shape
+            )
+            title = "Scene Model"
+        else:
+            raise ValueError
+        norm = simple_norm(to_plot.ravel(), "asinh", percent=95)
 
         bar = ax.pcolormesh(
             self.column_3d[frame_index],
             self.row_3d[frame_index],
-            self.flux_3d[frame_index],
+            to_plot,
             norm=norm,
             cmap=plt.cm.viridis,
             rasterized=True,
@@ -721,16 +583,12 @@ class RomanMachine(Machine):
 
         ax.set_title(
             f"{self.meta['MISSION']} | {self.meta['DETECTOR']} | {self.meta['FILTER']}\n"
-            f"Frame {self.cadenceno[frame_index]} | JD {self.time[frame_index]} "
-        )
-
-        srow, scol = (
-            self.WCSs[frame_index]
-            .all_world2pix(self.sources.loc[:, ["ra", "dec"]].values, 0.0)
-            .T
+            f"Frame {self.cadenceno[frame_index]} | JD {self.time[frame_index]} \n"
+            f"{title}"
         )
 
         if sources:
+            srow, scol = self.pixel_coordinates(frame_index=frame_index)
             # marker size correlates with source magnitude
             # size = self.sources.loc[:, self.meta["FILTER"]].values
             # size = np.exp(0.1 / ((size - 1-) / (10)))
@@ -827,7 +685,7 @@ class RomanMachine(Machine):
         self,
         target_idx: List[int] = [0],
         gradient: bool = True,
-        bkg_poly_order: int = 2,
+        bkg_poly_order: int = 3,
     ):
         """
         Returns background model terms for the given target index.
@@ -855,8 +713,8 @@ class RomanMachine(Machine):
         bkg_terms.append(np.ones(tpfshape).ravel())
 
         if gradient:
-            dx_ravel = self.dra[target_idx].value.ravel()
-            dy_ravel = self.ddec[target_idx].value.ravel()
+            dx_ravel = self.dcolumn[target_idx].ravel()
+            dy_ravel = self.drow[target_idx].ravel()
 
             for i in range(1, bkg_poly_order + 1):
                 for j in range(0, i + 1):
@@ -864,47 +722,12 @@ class RomanMachine(Machine):
 
         return np.array(bkg_terms)
 
-    def _get_mean_model_nomask(self) -> None:
-        """
-        Computes a mean model of each source in the image with the PSF shape model
-        and no mask applied, i.e. using all available pixels in the image.
-        """
-        if self.is_sparse:
-            r = self.r.data
-            phi = self.phi.data
-        else:
-            r = self.r.value.ravel()
-            phi = self.phi.value.ravel()
-
-        # print(r.shape, phi.shape)
-        Ap = _make_A_polar(
-            phi,
-            r,
-            rmin=self.rmin,
-            rmax=self.rmax,
-            cut_r=self.cut_r,
-            n_r_knots=self.n_r_knots,
-            n_phi_knots=self.n_phi_knots,
-        )
-        if self.is_sparse:
-            mean_model = sparse.csr_matrix(self.r.shape)
-            m = 10 ** Ap.dot(self.psf_w)
-            m[~np.isfinite(m)] = 0
-            mean_model[self.source_mask] = m
-            mean_model.eliminate_zeros()
-        else:
-            mean_model = 10 ** Ap.dot(self.psf_w)
-            mean_model[~np.isfinite(mean_model)] = 0
-            mean_model = mean_model.reshape(self.r.shape)
-        mean_model[mean_model < np.percentile(mean_model, 40)] = 0
-        mean_model /= np.nansum(mean_model, axis=1, keepdims=True)
-        # self.mean_model = sparse.csr_matrix(mean_model)
-        self.mean_model = mean_model
-
-        return
-
     def fit_prf_photometry(
-        self, targets: List[int] = [], model_bkg: bool = True, do_aperture: bool = True,
+        self,
+        targets: List[int] = [],
+        model_bkg: bool = True,
+        bkg_nknots: int = 3,
+        do_aperture: bool = True,
     ) -> None:
         """
         Fits PRF photometry the given targets in the image accounting for backgronund
@@ -929,7 +752,7 @@ class RomanMachine(Machine):
             targets_centroid = np.zeros((self.nt, len(targets), 2))
             aperture_masks = []
 
-        # prior_mu = self.source_flux_estimates 
+        # prior_mu = self.source_flux_estimates
         # prior_sigma = (
         #     np.ones(self.mean_model.shape[0])
         #     * 5
@@ -942,15 +765,9 @@ class RomanMachine(Machine):
             total=self.nt,
             disable=self.quiet,
         ):
-            # update sparse arrays due to offsets
-            self._update_delta_arrays(frame_index=tdx)
-            # correct dra/ddec for current centroid offsets
-            # self.dra -= self.ra_centroid[tdx].to("deg")
-            # self.ddec -= self.dec_centroid[tdx].to("deg")
-            # update mean model due to offsets
-            self._get_mean_model()
-            # get targets PSF model
-            mean_model = self.mean_model.copy()
+            # update scene model due to pixel grid offsets
+            self.draw_scene(frame_index=tdx)
+            mean_model = sparse.csr_matrix(self.scene_model.copy())
             if len(targets) > 0:
                 targets_models = mean_model[targets]
                 # get background stars PSF model
@@ -970,18 +787,15 @@ class RomanMachine(Machine):
                 model = mean_model
             if model_bkg:
                 bkg_terms = _make_A_cartesian(
-                    x=self.dra[targets[0] if len(targets) > 0 else 0].value.ravel(),
-                    y=self.ddec[targets[0] if len(targets) > 0 else 0].value.ravel(),
-                    n_knots=3,
+                    x=self.dcolumn[targets[0] if len(targets) > 0 else 0].ravel(),
+                    y=self.drow[targets[0] if len(targets) > 0 else 0].ravel(),
+                    n_knots=bkg_nknots,
                 ).T
-                # print("model", model.shape, type(model))
-                # print("bkg_terms", bkg_terms.shape, type(bkg_terms))
                 model = sparse.vstack([model, bkg_terms]).tocsr()
                 # model = np.vstack([model, bkg_terms])
                 # prior_mu = np.concatenate([prior_mu, np.ones(bkg_terms.shape[0])])
                 # prior_sigma = np.ones(prior_mu.shape[0]) * 5 * np.abs(prior_mu) ** 0.5
             # solve linear model with current flux
-            # print("model", model.shape, type(model))
             try:
                 w, werr = solve_linear_model(
                     # sparse.csr_matrix(model.T),
@@ -998,12 +812,6 @@ class RomanMachine(Machine):
                 targets_prf_flux[tdx, :] = -1e6
                 targets_prf_flux_err[tdx, :] = -1e6
                 continue
-            # print(model.shape, w.shape)
-            # print(w)
-            # print('______________')
-            # w = matrix_solve(
-            #     model.toarray(), self.flux[tdx], data_err=self.flux_err[tdx]
-            # )
             # assign flux phot values to targets
             targets_prf_flux[tdx, :] = w[:n_targets]
             targets_prf_flux_err[tdx, :] = werr[:n_targets]
@@ -1014,10 +822,10 @@ class RomanMachine(Machine):
 
             # reduced chi2
             if tdx == 0:
-                model_rank = np.linalg.matrix_rank(model.toarray()) 
+                model_rank = np.linalg.matrix_rank(model.toarray())
             model_chi2[tdx] = ((self.flux[tdx] - scene_model[tdx]) ** 2).sum() / (
                 np.prod(self.image_shape) - model_rank
-            ) 
+            )
 
             # do aperture photometry for targets
             if do_aperture:
@@ -1030,21 +838,40 @@ class RomanMachine(Machine):
                 targets_centroid[tdx] = ap_flux[:, 4:6]
                 aperture_masks.append(aperture_mask)
 
-        self.targets_prf_flux = targets_prf_flux
-        self.targets_prf_flux_err = targets_prf_flux_err
         self.scene_model = scene_model
         self.bkg_model = bkg_model
-        self.model_chi2 = model_chi2
+
+        if not hasattr(self, "lc"):
+            self.lc = {}
+        if "psf" not in self.lc.keys():
+            self.lc["psf"] = {}
+        for sdx, snum in enumerate(targets):
+            self.lc["psf"][snum] = {
+                "time": self.time,
+                "flux": targets_prf_flux[:, sdx],
+                "flux_err": targets_prf_flux_err[:, sdx],
+                "chi2": model_chi2,
+                # "quality": ,
+            }
 
         if do_aperture:
-            self.targets_ap_flux = targets_ap_flux
-            self.targets_ap_flux_err = targets_ap_flux_err
-            self.aperture_metrics = aperture_metrics
-            self.aperture_masks = np.array(aperture_masks)
-            self.targets_centroid = targets_centroid
+            aperture_masks = np.array(aperture_masks)
+            self.lc["aperture"] = {}
+            for sdx, snum in enumerate(targets):
+                self.lc["aperture"][snum] = {
+                    "time": self.time,
+                    "flux": targets_ap_flux[:, sdx],
+                    "flux_err": targets_ap_flux_err[:, sdx],
+                    "flfrcsap": aperture_metrics[:, sdx, 0],
+                    "crowdsap": aperture_metrics[:, sdx, 1],
+                    "centroid_x": targets_centroid[:, sdx, 0],
+                    "centroid_y": targets_centroid[:, sdx, 1],
+                    "aperture_mask": aperture_masks[:, sdx, :],
+                    # "quality": ,
+                }
 
         return
-    
+
     def _single_frame_aperture_photometry(
         self,
         frame_index: int = 0,
@@ -1059,10 +886,12 @@ class RomanMachine(Machine):
         cut = np.array(
             [
                 np.nanpercentile(obj.data, per)
-                for obj, per in zip(self.mean_model, percentile_cut)
+                for obj, per in zip(self.scene_model, percentile_cut)
             ]
         )
-        aperture_mask = np.array(self.mean_model >= cut[::, None])
+        aperture_mask = np.array(self.scene_model >= cut[::, None])
+
+
         targets_ap_flux = np.array(
             [
                 [
@@ -1074,8 +903,8 @@ class RomanMachine(Machine):
         )
         flux_metrics = np.array(
             [
-                compute_FLFRCSAP(self.mean_model, aperture_mask)[targets],
-                compute_CROWDSAP(self.mean_model, aperture_mask)[targets],
+                compute_FLFRCSAP(self.scene_model, aperture_mask)[targets],
+                compute_CROWDSAP(self.scene_model, aperture_mask)[targets],
             ]
         ).T
 
@@ -1083,11 +912,11 @@ class RomanMachine(Machine):
             [
                 [
                     np.average(
-                        self.dra[tar][aperture_mask[tar]].value,
+                        self.dcolumn[tar][aperture_mask[tar]],
                         weights=self.flux[frame_index, aperture_mask[tar]],
                     ),
                     np.average(
-                        self.ddec[tar][aperture_mask[tar]].value,
+                        self.drow[tar][aperture_mask[tar]],
                         weights=self.flux[frame_index, aperture_mask[tar]],
                     ),
                 ]
@@ -1098,7 +927,6 @@ class RomanMachine(Machine):
             [targets_ap_flux, flux_metrics, targets_centroid]
         ), aperture_mask[targets]
 
-    
     def do_aperture_photometry(self, targets: List[int] = []) -> None:
         """
         Performs aperture photometry for the given targets in the image.
@@ -1120,13 +948,8 @@ class RomanMachine(Machine):
             total=self.nt,
             disable=self.quiet,
         ):
-            # update sparse arrays due to offsets
-            self._update_delta_arrays(frame_index=tdx)
-            # correct dra/ddec for current centroid offsets
-            self.dra -= self.ra_centroid[tdx].to("deg")
-            self.ddec -= self.dec_centroid[tdx].to("deg")
-            # update mean model due to offsets
-            self._get_mean_model()
+            # update mean model due to  pixel grid
+            self.draw_scene(frame_index=tdx)
             # get aperture mask
             ap_flux, aperture_mask = self._single_frame_aperture_photometry(
                 frame_index=tdx, targets=targets
@@ -1137,20 +960,33 @@ class RomanMachine(Machine):
             targets_centroid[tdx] = ap_flux[:, 4:6]
             aperture_masks.append(aperture_mask)
 
-        self.targets_ap_flux = targets_ap_flux
-        self.targets_ap_flux_err = targets_ap_flux_err
-        self.aperture_metrics = aperture_metrics
-        self.aperture_masks = np.array(aperture_masks)
-        self.targets_centroid = targets_centroid
+        aperture_masks = np.array(aperture_masks)
+
+        if not hasattr(self, "lc"):
+            self.lc = {}
+        if "aperture" not in self.lc.keys():
+            self.lc["aperture"] = {}
+        for sdx, snum in enumerate(targets):
+            self.lc["aperture"][snum] = {
+                "time": self.time,
+                "flux": targets_ap_flux[:, sdx],
+                "flux_err": targets_ap_flux_err[:, sdx],
+                "flfrcsap": aperture_metrics[:, sdx, 0],
+                "crowdsap": aperture_metrics[:, sdx, 1],
+                "centroid_x": targets_centroid[:, sdx, 0],
+                "centroid_y": targets_centroid[:, sdx, 1],
+                "aperture_mask": aperture_masks[:, sdx, :],
+                # "quality": ,
+            }
 
         return
-
+    
 
 def _load_file(
     fname: Union[str, List[str], np.ndarray],
     cutout_size: int = 32,
     cutout_center: Union[Tuple[int, int], Tuple[float, float]] = (0, 0),
-    file_version: str="1.0",
+    file_version: str = "1.0",
 ) -> Tuple[
     List[Any],
     np.ndarray,
@@ -1228,7 +1064,11 @@ def _load_file(
         raise ValueError("Input file is not one of 'asdf' or 'fits'.")
 
     rcube = RomanCuts(
-        field=field, sca=sca, filter=filter, file_list=fname, file_format=format,
+        field=field,
+        sca=sca,
+        filter=filter,
+        file_list=fname,
+        file_format=format,
         file_version=file_version,
     )
     rcube.make_cutout(

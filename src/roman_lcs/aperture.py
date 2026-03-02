@@ -251,7 +251,7 @@ def compute_FLFRCSAP(psf_models, aperture_mask):
         Completeness metric
     """
     return np.array(
-        psf_models.multiply(aperture_mask.astype(float)).sum(axis=1)
+        np.multiply(psf_models, aperture_mask.astype(float)).sum(axis=1)
         / psf_models.sum(axis=1)
     ).ravel()
 
@@ -280,13 +280,13 @@ def compute_CROWDSAP(psf_models, aperture_mask, idx=None):
     CROWDSAP : numpy.ndarray
         Crowdeness metric
     """
-    ratio = psf_models.multiply(1 / psf_models.sum(axis=0)).tocsr()
+    ratio = np.multiply(psf_models, 1 / psf_models.sum(axis=0))
     if idx is None:
         return np.array(
-            ratio.multiply(aperture_mask.astype(float)).sum(axis=1)
+            np.multiply(ratio, aperture_mask.astype(float)).sum(axis=1)
         ).ravel() / aperture_mask.sum(axis=1)
     else:
-        return ratio[idx].toarray()[0][aperture_mask].sum() / aperture_mask.sum()
+        return ratio[idx][0][aperture_mask].sum() / aperture_mask.sum()
 
 
 def aperture_mask_to_2d(tpfs, sources, aperture_mask, column, row):

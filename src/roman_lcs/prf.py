@@ -2,6 +2,7 @@
 Class to manage PSF loading and evaluation
 """
 import os
+from typing import Optional
 
 import numpy as np
 from astropy.io import fits
@@ -51,9 +52,20 @@ class RomanPRF(object):
     FileNotFoundError
         If PSF model file not found at expected path
     """
-    def __init__(self, sca: int = 2, filter: str = "F146", sky_space: bool = False, conv: str = True):
+    def __init__(
+        self,
+        sca: int = 2,
+        filter: str = "F146",
+        sky_space: bool = False,
+        conv: str = True,
+        file_name: Optional[str] = None,
+    ):
 
-        self.fname = f"{PATH}/data/prf_models/rimtimsim_wfi_psfmodel_{filter}_SCA{sca:02}_spectype_M0V_jitter_12mas_nlambda_10.fits"
+        if file_name is not None:
+            self.fname = file_name
+        else:
+            self.fname = f"{PATH}/data/prf_models/rimtimsim_wfi_psfmodel_{filter}_SCA{sca:02}_spectype_M0V_jitter_12mas_nlambda_10.fits"
+        
         if not os.path.isfile(self.fname):
             print(self.fname)
             raise FileNotFoundError
@@ -73,23 +85,25 @@ class RomanPRF(object):
         )
         self.detector = self.hdul[0].header["DETECTOR"]
 
-        row = np.linspace(0, self.prf.shape[0], num=self.prf.shape[0])
-        col = np.linspace(0, self.prf.shape[1], num=self.prf.shape[1])
-        row, col = np.meshgrid(row, col, indexing="ij")
+        y = np.linspace(0, self.prf.shape[0], num=self.prf.shape[0])
+        x = np.linspace(0, self.prf.shape[1], num=self.prf.shape[1])
+        x, y = np.meshgrid(x, y, indexing="xy")
 
-        rpos = row[:, 0].mean()
-        cpos = col[0, :].mean()
+        rpos = y[:, 0].mean()
+        cpos = x[0, :].mean()
 
-        self.drow = (row - rpos) / self.oversample_factor
-        self.dcol = (col - cpos) / self.oversample_factor
+        self.dy = (y - rpos) / self.oversample_factor
+        self.dx = (x - cpos) / self.oversample_factor
 
         if sky_space:
-            self.drow *= self.pixel_scale
-            self.dcol *= self.pixel_scale
+            self.dy *= self.pixel_scale
+            self.dx *= self.pixel_scale
 
         if conv:
             box_kernel = Box2DKernel(self.oversample_factor)
             self.prf = convolve(self.prf, box_kernel)
+        
+        self.prf_sum = self.prf.sum()
 
         self._build_interpolator()
 
@@ -101,7 +115,7 @@ class RomanPRF(object):
         for efficient evaluation at arbitrary positions.
         """
         self.interp_func = interpolate.RectBivariateSpline(
-            self.dcol[0, :], self.drow[:, 0], self.prf
+            self.dx[0, :], self.dy[:, 0], self.prf
         )
 
     def evaluate_from_position(
@@ -109,6 +123,7 @@ class RomanPRF(object):
         center: tuple[float, float] = (12.5, 12.5), 
         shape: tuple[int, int] = (25, 25), 
         corner: tuple[int, int] = (0, 0),
+        transpose: bool = True,
         ):
         """
         Evaluate PSF at a specified position within a region.
@@ -131,18 +146,17 @@ class RomanPRF(object):
         psf_values : ndarray
             2D array of interpolated PSF values at grid positions
         """
-        dx = np.arange(corner[1], corner[1] + shape[1])
-        dy = np.arange(corner[0], corner[0] + shape[0])
+        dx = np.arange(corner[1], corner[1] + shape[1], dtype=float)
+        dy = np.arange(corner[0], corner[0] + shape[0], dtype=float)
         dx, dy = np.meshgrid(dx, dy, indexing="xy")
 
         dx -= (center[1])
         dy -= (center[0])
+        eval = self.interp_func(dy, dx, grid=False)
+        # if transpose:
+        #     eval = eval.T
 
-        return (
-            dx + center[1],
-            dy + center[0],
-            self.interp_func(dx, dy, grid=False),
-        )
+        return dx + center[1], dy + center[0], eval
 
     def evaluate_from_array(self, dx: np.ndarray, dy: np.ndarray):
         """
