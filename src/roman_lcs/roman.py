@@ -304,19 +304,20 @@ class RomanMachine(Machine):
         mask : numpy.ndarray
             Boolean mask with rejected pixels
         """
-        # Which pixels are saturated
-        # this nanpercentile takes forever to compute for a single cadence ffi
-        # saturated = np.nanpercentile(self.flux, 99, axis=0)
-        # assume we'll use ffi for 1 single cadence
-        sat_mask = self.flux > saturation_limit
-        # dilate the mask with tolerance
-        if tolerance > 0:
-            sat_mask = ndimage.binary_dilation(sat_mask, iterations=tolerance)
+        # which pixels are saturated at every time
+        sat_mask = self.flux_3d > saturation_limit
 
         # add nan values to the mask
-        sat_mask |= ~np.isfinite(self.flux)
+        sat_mask |= ~np.isfinite(self.flux_3d)
 
-        return sat_mask
+        # dilate the mask with tolerance
+        if tolerance > 0:
+            print("dilating")
+            struct = np.zeros((3, 3, 3), dtype=bool)
+            struct[1, :, :] = True
+            sat_mask = ndimage.binary_dilation(sat_mask, struct, iterations=tolerance)
+
+        return sat_mask.reshape(self.nt, -1)
 
     def _bright_sources_mask(
         self, magnitude_limit: float = 13, tolerance: float = 30
@@ -353,17 +354,17 @@ class RomanMachine(Machine):
         self.ra_offset = (self.ra - self.ra[0]).mean(axis=1)
         self.dec_offset = (self.dec - self.dec[0]).mean(axis=1)
 
-    def _remove_bad_pixels_from_source_mask(self) -> None:
-        """
-        Combines source_mask and uncontaminated_pixel_mask with saturated and bright
-        pixel mask.
-        """
-        self.source_mask = self.source_mask.multiply(self.pixel_mask).tocsr()
-        self.source_mask.eliminate_zeros()
-        self.uncontaminated_source_mask = self.uncontaminated_source_mask.multiply(
-            self.pixel_mask
-        ).tocsr()
-        self.uncontaminated_source_mask.eliminate_zeros()
+    # def _remove_bad_pixels_from_source_mask(self) -> None:
+    #     """
+    #     Combines source_mask and uncontaminated_pixel_mask with saturated and bright
+    #     pixel mask.
+    #     """
+    #     self.source_mask = self.source_mask.multiply(self.pixel_mask).tocsr()
+    #     self.source_mask.eliminate_zeros()
+    #     self.uncontaminated_source_mask = self.uncontaminated_source_mask.multiply(
+    #         self.pixel_mask
+    #     ).tocsr()
+    #     self.uncontaminated_source_mask.eliminate_zeros()
 
     def load_prf_model(
         self,
