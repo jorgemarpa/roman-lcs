@@ -270,7 +270,7 @@ class RomanMachine(Machine):
         self.non_sat_pixel_mask = ~self._saturated_pixels_mask(
             saturation_limit=pixel_saturation_limit
         )
-        # tolerance dependens on pixel scale, TESS pixels are 5 times larger than TESS
+        # tolerance dependens on pixel scale
         self.non_bright_source_mask = ~self._bright_sources_mask(
             magnitude_limit=magnitude_bright_limit, tolerance=10
         )
@@ -284,10 +284,13 @@ class RomanMachine(Machine):
         return
 
     def _saturated_pixels_mask(
-        self, saturation_limit: float = 1e5, tolerance: int = 3
+        self, saturation_limit: float = 6e4, tolerance: int = 0
     ) -> np.ndarray:
         """
         Finds and removes saturated pixels, including bleed columns.
+
+        Saturation limit defaul value set from:
+        https://roman.gsfc.nasa.gov/science/docs/Roman_Cycle_1___Bright_Star_Saturation_and_Persistence_Effects.pdf
 
         Parameters
         ----------
@@ -305,12 +308,13 @@ class RomanMachine(Machine):
         # this nanpercentile takes forever to compute for a single cadence ffi
         # saturated = np.nanpercentile(self.flux, 99, axis=0)
         # assume we'll use ffi for 1 single cadence
-        sat_mask = self.flux.max(axis=0) > saturation_limit
+        sat_mask = self.flux > saturation_limit
         # dilate the mask with tolerance
-        sat_mask = ndimage.binary_dilation(sat_mask, iterations=tolerance)
+        if tolerance > 0:
+            sat_mask = ndimage.binary_dilation(sat_mask, iterations=tolerance)
 
         # add nan values to the mask
-        sat_mask |= ~np.isfinite(self.flux.max(axis=0))
+        sat_mask |= ~np.isfinite(self.flux)
 
         return sat_mask
 
