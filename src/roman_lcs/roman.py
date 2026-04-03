@@ -590,14 +590,16 @@ class RomanMachine(Machine):
         if sources:
             srow, scol = self.pixel_coordinates(frame_index=frame_index)
             # marker size correlates with source magnitude
-            # size = self.sources.loc[:, self.meta["FILTER"]].values
-            # size = np.exp(0.1 / ((size - 1-) / (10)))
+            size = self.sources.loc[:, self.meta["FILTER"]].values
+            size = np.clip(size, 15, 23)
+            size = (23 - size) / (23 - 15)
+            size = 5 + (50 - 5) * size
             ax.scatter(
                 scol,
                 srow,
                 c="tab:red",
                 marker="o",
-                s=5,
+                s=size,
                 linewidths=0.1,
                 alpha=0.8,
             )
@@ -664,20 +666,24 @@ class RomanMachine(Machine):
         mode : str
             What type of light curve wil be created
         """
+        if not hasattr(self, "lcs"):
+            raise AttributeError("No light curve has been extracted yet, run `self.fit_prf_photometry` first")
         if mode == "lk":
-            lcs = []
-            for idx, s in self.sources.iterrows():
-                meta = {}
+            lcs = {}
+            for idx, val in self.lcs.items():
+                psf_lc = {f"psf_{k}": val for k, val in val["psf"].items()}
+                del psf_lc["psf_time"]
+                ap_meta_cols = ['flfrcsap', 'crowdsap', 'centroid_x', 'centroid_y', 'quality']
+                ape_meta = {f"ap_{k}": val for k, val in val["aperture"].items() if k in ap_meta_cols}
                 lc = lk.LightCurve(
-                    time=(self.time) * u.d,
-                    flux=self.ws[:, idx] * u.electron / u.second,
-                    flux_err=self.werrs[:, idx] * u.electron / u.second,
-                    meta=meta,
-                    time_format="mjd",
+                    time=val["aperture"]["time"] * u.d,
+                    flux=val["aperture"]["flux"] * u.electron / u.second,
+                    flux_err=val["aperture"]["flux_err"] * u.electron / u.second,
+                    data=ape_meta | psf_lc,
                 )
-                lcs.append(lc)
+                lcs[idx] = lc
 
-            self.lcs = lk.LightCurveCollection(lcs)
+            return lcs
         elif mode == "table":
             raise NotImplementedError
 
@@ -745,6 +751,13 @@ class RomanMachine(Machine):
         scene_model = np.zeros_like(self.flux)
         bkg_model = np.zeros_like(self.flux)
 
+        if model_bkg:
+            bkg_terms = _make_A_cartesian(
+                x=self.dcolumn[targets[0] if len(targets) > 0 else 0].ravel(),
+                y=self.drow[targets[0] if len(targets) > 0 else 0].ravel(),
+                n_knots=bkg_nknots,
+            ).T
+
         if do_aperture:
             targets_ap_flux = np.zeros((self.nt, len(targets)))
             targets_ap_flux_err = np.zeros((self.nt, len(targets)))
@@ -759,6 +772,8 @@ class RomanMachine(Machine):
         #     * np.abs(self.source_flux_estimates) ** 0.5
         # )
 
+        self._compute_aperture_cut()
+
         for tdx in tqdm(
             range(self.nt),
             desc="Fitting PRF photometry",
@@ -767,7 +782,7 @@ class RomanMachine(Machine):
         ):
             # update scene model due to pixel grid offsets
             self.draw_scene(frame_index=tdx)
-            mean_model = sparse.csr_matrix(self.scene_model.copy())
+            mean_model = sparse.csr_matrix(self.scene_model)
             if len(targets) > 0:
                 targets_models = mean_model[targets]
                 # get background stars PSF model
@@ -786,11 +801,6 @@ class RomanMachine(Machine):
             else:
                 model = mean_model
             if model_bkg:
-                bkg_terms = _make_A_cartesian(
-                    x=self.dcolumn[targets[0] if len(targets) > 0 else 0].ravel(),
-                    y=self.drow[targets[0] if len(targets) > 0 else 0].ravel(),
-                    n_knots=bkg_nknots,
-                ).T
                 model = sparse.vstack([model, bkg_terms]).tocsr()
                 # model = np.vstack([model, bkg_terms])
                 # prior_mu = np.concatenate([prior_mu, np.ones(bkg_terms.shape[0])])
@@ -838,15 +848,14 @@ class RomanMachine(Machine):
                 targets_centroid[tdx] = ap_flux[:, 4:6]
                 aperture_masks.append(aperture_mask)
 
-        self.scene_model = scene_model
+        self.scene_model_cube = scene_model
         self.bkg_model = bkg_model
 
-        if not hasattr(self, "lc"):
-            self.lc = {}
-        if "psf" not in self.lc.keys():
-            self.lc["psf"] = {}
+        if not hasattr(self, "lcs"):
+            self.lcs = {}
         for sdx, snum in enumerate(targets):
-            self.lc["psf"][snum] = {
+            self.lcs[snum] = {}
+            self.lcs[snum]["psf"] = {
                 "time": self.time,
                 "flux": targets_prf_flux[:, sdx],
                 "flux_err": targets_prf_flux_err[:, sdx],
@@ -856,9 +865,8 @@ class RomanMachine(Machine):
 
         if do_aperture:
             aperture_masks = np.array(aperture_masks)
-            self.lc["aperture"] = {}
             for sdx, snum in enumerate(targets):
-                self.lc["aperture"][snum] = {
+                self.lcs[snum]["aperture"] = {
                     "time": self.time,
                     "flux": targets_ap_flux[:, sdx],
                     "flux_err": targets_ap_flux_err[:, sdx],
@@ -871,26 +879,31 @@ class RomanMachine(Machine):
                 }
 
         return
-
-    def _single_frame_aperture_photometry(
-        self,
-        frame_index: int = 0,
-        targets: List[int] = [],
-        percentile_cut: Optional[np.ndarray] = None,
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    
+    def _compute_aperture_cut(self, percentile_cut: Optional[np.ndarray] = None):
         """
-        Performs aperture photometry for a single frame and given targets in the image.
+        Computes the cut for aperture photometry based on the percentile of the scene model.
         """
         if percentile_cut is None:
             percentile_cut = np.array([90] * self.nsources)
-        cut = np.array(
+        self.prf_cut = np.array(
             [
                 np.nanpercentile(obj.data, per)
                 for obj, per in zip(self.scene_model, percentile_cut)
             ]
         )
-        aperture_mask = np.array(self.scene_model >= cut[::, None])
+        return
+        
 
+    def _single_frame_aperture_photometry(
+        self,
+        frame_index: int = 0,
+        targets: List[int] = [],
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Performs aperture photometry for a single frame and given targets in the image.
+        """
+        aperture_mask = np.array(self.scene_model >= self.prf_cut[::, None])
 
         targets_ap_flux = np.array(
             [
@@ -937,6 +950,8 @@ class RomanMachine(Machine):
             List of target names to fit PRF photometry for. If None, all sources in
             the image will be used.
         """
+        self._compute_aperture_cut()
+
         targets_ap_flux = np.zeros((self.nt, len(targets)))
         targets_ap_flux_err = np.zeros((self.nt, len(targets)))
         aperture_metrics = np.zeros((self.nt, len(targets), 2))
@@ -962,12 +977,12 @@ class RomanMachine(Machine):
 
         aperture_masks = np.array(aperture_masks)
 
-        if not hasattr(self, "lc"):
-            self.lc = {}
-        if "aperture" not in self.lc.keys():
-            self.lc["aperture"] = {}
+        if not hasattr(self, "lcs"):
+            self.lcs = {}
         for sdx, snum in enumerate(targets):
-            self.lc["aperture"][snum] = {
+            if snum not in self.lcs.keys():
+                self.lcs[snum] = {}
+            self.lcs[snum]["aperture"] = {
                 "time": self.time,
                 "flux": targets_ap_flux[:, sdx],
                 "flux_err": targets_ap_flux_err[:, sdx],

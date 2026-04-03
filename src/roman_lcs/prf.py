@@ -107,23 +107,23 @@ class RomanPRF(object):
 
         self._build_interpolator()
 
-    def _build_interpolator(self):
+    def _build_interpolator(self, method: str = "cubic"):
         """
         Build 2D interpolation function for PSF model.
         
         Creates a RectBivariateSpline interpolator from the loaded PSF data
         for efficient evaluation at arbitrary positions.
         """
-        self.interp_func = interpolate.RectBivariateSpline(
-            self.dx[0, :], self.dy[:, 0], self.prf
+        self.interp_func = interpolate.RegularGridInterpolator(
+            (self.dx[0, :], self.dy[:, 0]), self.prf, method=method
         )
+        return
 
     def evaluate_from_position(
         self,
         center: tuple[float, float] = (12.5, 12.5), 
         shape: tuple[int, int] = (25, 25), 
         corner: tuple[int, int] = (0, 0),
-        transpose: bool = True,
         ):
         """
         Evaluate PSF at a specified position within a region.
@@ -152,7 +152,7 @@ class RomanPRF(object):
 
         dx -= (center[1])
         dy -= (center[0])
-        eval = self.interp_func(dy, dx, grid=False)
+        eval = self.interp_func((dy, dx))
         # if transpose:
         #     eval = eval.T
 
@@ -174,7 +174,7 @@ class RomanPRF(object):
         psf_values : ndarray
             Interpolated PSF values at given offset coordinates
         """
-        return self.interp_func(dx, dy, grid=False)
+        return self.interp_func((dy, dx))
 
 
 
