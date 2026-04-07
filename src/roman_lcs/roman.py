@@ -253,7 +253,7 @@ class RomanMachine(Machine):
         )
 
     def _mask_pixels(
-        self, pixel_saturation_limit: float = 2e4, magnitude_bright_limit: float = 13
+        self, pixel_saturation_limit: float = 6e4, magnitude_bright_limit: float = 13
     ) -> None:
         """
         Mask saturated pixels and halo/difraction pattern from bright sources.
@@ -267,14 +267,14 @@ class RomanMachine(Machine):
         """
 
         # mask saturated pixels.
-        self.non_sat_pixel_mask = ~self._saturated_pixels_mask(
+        self.sat_pixel_mask = self._saturated_pixels_mask(
             saturation_limit=pixel_saturation_limit
         )
         # tolerance dependens on pixel scale
-        self.non_bright_source_mask = ~self._bright_sources_mask(
-            magnitude_limit=magnitude_bright_limit, tolerance=10
-        )
-        self.pixel_mask = self.non_sat_pixel_mask & self.non_bright_source_mask
+        # self.non_bright_source_mask = ~self._bright_sources_mask(
+        #     magnitude_limit=magnitude_bright_limit, tolerance=10
+        # )
+        self.pixel_mask = ~self.sat_pixel_mask #& self.non_bright_source_mask
 
         # if not hasattr(self, "source_mask"):
         #     self._get_source_mask()
@@ -312,7 +312,6 @@ class RomanMachine(Machine):
 
         # dilate the mask with tolerance
         if tolerance > 0:
-            print("dilating")
             struct = np.zeros((3, 3, 3), dtype=bool)
             struct[1, :, :] = True
             sat_mask = ndimage.binary_dilation(sat_mask, struct, iterations=tolerance)
@@ -641,10 +640,10 @@ class RomanMachine(Machine):
                 s=1,
                 label="bright mask",
             )
-        if hasattr(self, "non_sat_pixel_mask"):
+        if hasattr(self, "sat_pixel_mask"):
             ax.scatter(
-                self.column_3d.ravel()[~self.non_sat_pixel_mask],
-                self.row_3d.ravel()[~self.non_sat_pixel_mask],
+                self.column_3d.ravel()[self.sat_pixel_mask],
+                self.row_3d.ravel()[self.sat_pixel_mask],
                 c="r",
                 marker="s",
                 s=1,
@@ -908,41 +907,51 @@ class RomanMachine(Machine):
         """
         Performs aperture photometry for a single frame and given targets in the image.
         """
+        # define aperture mask from PRF isophotes
         aperture_mask = np.array(self.scene_model >= self.prf_cut[::, None])
+        # combine aperture mask with pixel mask to remove bad pixels from aperture photometry
+        if hasattr(self, "pixel_mask"):
+            _aperture_mask = aperture_mask & self.pixel_mask[frame_index][None, :]
+        else:
+            _aperture_mask = aperture_mask
 
+        # sum flux and error in the aperture
         targets_ap_flux = np.array(
             [
                 [
                     self.flux[frame_index, ap].sum(),
                     np.sqrt((self.flux_err[frame_index, ap] ** 2).sum()),
+
                 ]
-                for ap in aperture_mask[targets]
+                for ap in _aperture_mask[targets]
             ]
         )
+        # compute aperture metrics
         flux_metrics = np.array(
             [
-                compute_FLFRCSAP(self.scene_model, aperture_mask)[targets],
-                compute_CROWDSAP(self.scene_model, aperture_mask)[targets],
+                compute_FLFRCSAP(self.scene_model, _aperture_mask)[targets],
+                compute_CROWDSAP(self.scene_model, _aperture_mask)[targets],
             ]
         ).T
-
+        # compute centroids using flux weighted average of pixel coordinates in the aperture
         targets_centroid = np.array(
             [
                 [
                     np.average(
-                        self.dcolumn[tar][aperture_mask[tar]],
-                        weights=self.flux[frame_index, aperture_mask[tar]],
+                        self.dcolumn[tar][_aperture_mask[tar]],
+                        weights=self.flux[frame_index, _aperture_mask[tar]],
                     ),
                     np.average(
-                        self.drow[tar][aperture_mask[tar]],
-                        weights=self.flux[frame_index, aperture_mask[tar]],
+                        self.drow[tar][_aperture_mask[tar]],
+                        weights=self.flux[frame_index, _aperture_mask[tar]],
                     ),
                 ]
                 for tar in targets
             ]
         )
+        quality = np.array([(~self.pixel_mask[frame_index][aperture_mask[tar]]).sum() for tar in targets])
         return np.hstack(
-            [targets_ap_flux, flux_metrics, targets_centroid]
+            [targets_ap_flux, flux_metrics, targets_centroid, [quality]]
         ), aperture_mask[targets]
 
     def do_aperture_photometry(self, targets: List[int] = []) -> None:
@@ -961,6 +970,7 @@ class RomanMachine(Machine):
         targets_ap_flux_err = np.zeros((self.nt, len(targets)))
         aperture_metrics = np.zeros((self.nt, len(targets), 2))
         targets_centroid = np.zeros((self.nt, len(targets), 2))
+        targets_ap_quality = np.zeros((self.nt, len(targets)))
         aperture_masks = []
         for tdx in tqdm(
             range(self.nt),
@@ -978,6 +988,7 @@ class RomanMachine(Machine):
             targets_ap_flux_err[tdx] = ap_flux[:, 1]
             aperture_metrics[tdx] = ap_flux[:, 2:4]
             targets_centroid[tdx] = ap_flux[:, 4:6]
+            targets_ap_quality[tdx] = ap_flux[:, 6]
             aperture_masks.append(aperture_mask)
 
         aperture_masks = np.array(aperture_masks)
@@ -996,8 +1007,9 @@ class RomanMachine(Machine):
                 "centroid_x": targets_centroid[:, sdx, 0],
                 "centroid_y": targets_centroid[:, sdx, 1],
                 "aperture_mask": aperture_masks[:, sdx, :],
-                # "quality": ,
+                "quality": targets_ap_quality[:, sdx],
             }
+        self.aperture_masks = aperture_masks
 
         return
     
