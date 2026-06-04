@@ -19,6 +19,7 @@ patsy = "^0.5.1"
 lightkurve = "^2.0"
 fitsio = "^1.1.3"
 roman-cuts = ">=0.3.0"
+stpsf = "^2.2.0"
 
 [tool.poetry.group.dev.dependencies]
 mkdocs = "^1.6.0"

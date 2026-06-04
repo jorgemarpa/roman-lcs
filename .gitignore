@@ -22,3 +22,6 @@ logs*
 data/roman_wfi_dryrun01_lcs_v00.tar.gz
 src/__pycache__
 tests/__pycache__
+data/ePSF_lib/*
+data/prf_models/roman_WFI_rampfitted_F146_3_SCA02_*.fits
+.vscode/settings.json
