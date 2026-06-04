@@ -754,6 +754,7 @@ class RomanMachine(Machine):
         model_chi2 = np.zeros(self.nt)
         scene_model = np.zeros_like(self.flux)
         bkg_model = np.zeros_like(self.flux)
+        psf_quality = np.zeros(self.nt)
 
         if model_bkg:
             bkg_terms = _make_A_cartesian(
@@ -767,6 +768,7 @@ class RomanMachine(Machine):
             targets_ap_flux_err = np.zeros((self.nt, len(targets)))
             aperture_metrics = np.zeros((self.nt, len(targets), 2))
             targets_centroid = np.zeros((self.nt, len(targets), 2))
+            targets_ap_quality = np.zeros((self.nt, len(targets)))
             aperture_masks = []
 
         # prior_mu = self.source_flux_estimates
@@ -775,7 +777,7 @@ class RomanMachine(Machine):
         #     * 5
         #     * np.abs(self.source_flux_estimates) ** 0.5
         # )
-
+        self.draw_scene(frame_index=0)
         self._compute_aperture_cut()
 
         for tdx in tqdm(
@@ -817,6 +819,7 @@ class RomanMachine(Machine):
                     y=self.flux[tdx],
                     y_err=self.flux_err[tdx],
                     errors=True,
+                    k=self.pixel_mask[tdx],
                     # prior_mu=prior_mu,
                     # prior_sigma=prior_sigma,
                 )
@@ -841,6 +844,10 @@ class RomanMachine(Machine):
                 np.prod(self.image_shape) - model_rank
             )
 
+            # quality mask with sat and bad pixels
+
+            psf_quality[tdx] = (~self.pixel_mask[tdx]).sum()
+
             # do aperture photometry for targets
             if do_aperture:
                 ap_flux, aperture_mask = self._single_frame_aperture_photometry(
@@ -850,6 +857,7 @@ class RomanMachine(Machine):
                 targets_ap_flux_err[tdx] = ap_flux[:, 1]
                 aperture_metrics[tdx] = ap_flux[:, 2:4]
                 targets_centroid[tdx] = ap_flux[:, 4:6]
+                targets_ap_quality[tdx] = ap_flux[:, 6]
                 aperture_masks.append(aperture_mask)
 
         self.scene_model_cube = scene_model
@@ -864,7 +872,7 @@ class RomanMachine(Machine):
                 "flux": targets_prf_flux[:, sdx],
                 "flux_err": targets_prf_flux_err[:, sdx],
                 "chi2": model_chi2,
-                # "quality": ,
+                "quality": psf_quality,
             }
 
         if do_aperture:
@@ -879,7 +887,7 @@ class RomanMachine(Machine):
                     "centroid_x": targets_centroid[:, sdx, 0],
                     "centroid_y": targets_centroid[:, sdx, 1],
                     "aperture_mask": aperture_masks[:, sdx, :],
-                    # "quality": ,
+                    "quality": targets_ap_quality[:, sdx],
                 }
 
         return
