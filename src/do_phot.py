@@ -49,11 +49,14 @@ def do_target_photometry(
     fit_blends: bool = False,
     nthreads: Optional[int] = None,
     blend_limit: Optional[float] = None,
+    image_version: str = "1.1",
+    prf_version: int = 3,
+    test_run: bool = False,
 ):
     # get list of FITS file paths to load into Machine
     ff = sorted(
         glob(
-            f"{PATH}/simulated_image_data/rimtimsim_WFI_lvl02_{FILTER}_SCA{SCA:02}_field{FIELD:02}_rampfitted_exposureno_*_sim.fits"
+            f"{PATH}/simulated_image_data_fixed/rimtimsim_WFI_lvl02_{FILTER}_SCA{SCA:02}_field{FIELD:02}_rampfitted_exposureno_*_sim.fits"
         )
     )
     # parPATH = "/Volumes/JorgeMarpa-2T/trexs/dryrun_01/"
@@ -68,6 +71,9 @@ def do_target_photometry(
         log.error(f"No files found for Field {FIELD} Filter {FILTER} in folder {PATH}.")
         return 1
     log.info(f"Total files for Field {FIELD} Filter {FILTER} in folder: {len(ff)}.")
+    if test_run:
+        log.info("Test run: limiting to 1000 frames.")
+        ff = ff[:1000]
 
     try:
         with sqlite3.connect(
@@ -87,13 +93,19 @@ def do_target_photometry(
         f"Targeting photometry to ID {target} RA {cutout_center[0]} Dec {cutout_center[1]}."
     )
     # get cutout origin
-    rcube = RomanCuts(field=FIELD, sca=SCA, filter=FILTER, file_list=ff[:2])
+    rcube = RomanCuts(
+        field=FIELD,
+        sca=SCA,
+        filter=FILTER,
+        file_list=ff[:2],
+        file_version=image_version,
+    )
     rcube.get_all_wcs()
     pix_center = rcube.wcss[0].all_world2pix(cutout_center[0], cutout_center[1], 0)
     cutout_origin = np.array(pix_center) - cutout_size / 2
     cutout_origin = np.round(cutout_origin).astype(int)
 
-    # load surce catalogs in the cutout
+    # load source catalogs in the cutout
     buffer = 4  # pixel buffer for catalog query
     with sqlite3.connect(
         f"{PATH}/metadata/TRExS_dryrun_01_MASTER_input_catalog_v1.1.db"
@@ -105,7 +117,12 @@ def do_target_photometry(
         )
         sources = pd.read_sql_query(
             f"SELECT * FROM Master_input_catalog WHERE {query}", conn
-        ).reset_index(drop=True)
+        )
+        # only keep sources within 2 arcsec of the target
+        sources = sources[np.hypot(
+            sources.RA_DEG.values - cutout_center[0], 
+            sources.DEC_DEG.values - cutout_center[1]
+            ) < 2 / 3600].reset_index(drop=True)
     if len(sources) == 0:
         log.error(f"No sources found in cutout for target {target}.")
         return 3
@@ -156,10 +173,11 @@ def do_target_photometry(
         mac = RomanMachine.from_file(
             ff,
             sources=sources,
-            sparse_dist_lim=2,
+            sparse_dist_lim=20,
             sources_flux_column="flux",
             cutout_size=cutout_size,
             cutout_center=cutout_center,
+            file_version="1.1",
         )
     except Exception as e:
         log.error("Could not start RomanMachine.")
@@ -177,12 +195,13 @@ def do_target_photometry(
         f"{DATPATH}/prf_models/"
         f"roman_WFI_{mac.meta['READMODE']}_{mac.meta['FILTER']}"
         f"_{mac.meta['FIELD']}_{mac.meta['DETECTOR']}_shape_model_cad{0}"
-        f"_center_v2.fits"
+        f"_center_v{prf_version}.fits"
     )
     try:
-        mac.load_shape_model(
-            prf_fname, flux_cut_off=0.01, plot=False, source_flux_limit=5
-        )
+        # mac.load_shape_model(
+        #     prf_fname, flux_cut_off=0.01, plot=False, source_flux_limit=5
+        # )
+        mac.load_prf_model()
     except Exception as e:
         log.error(f"Could not load PRF model from {prf_fname}.")
         log.error(f"Error: {e}")
@@ -194,16 +213,25 @@ def do_target_photometry(
     # so we can run parallel jobs without lowering performance too much
     try:
         with threadpool_limits(limits=nthreads, user_api="blas"):
-            mac.fit_prf_photometry(targets=targets_idx.tolist(), model_bkg=True)
+            mac.fit_prf_photometry(
+                targets=targets_idx.tolist(), model_bkg=True, do_aperture=True
+            )
     except Exception as e:
         log.error("Error during PRF fitting")
         log.error(f"Error: {e}")
         return 5
 
+    # update metadata
+    mac.meta["CREATOR"] = "TREXS-roman-lcs"
+    mac.meta["IMGVER"] = image_version
+    mac.meta["PRFVER"] = prf_version
+    mac.meta["IMGSIZE"] = str(mac.image_shape)
+    file_version = f"{image_version}.{prf_version}"
+
     # save LCs to fits files
     for i, k in enumerate(targets_idx):
         metadata = mac.meta.copy()
-        metadata["FILEVER"] = ("2.0", "File version")
+        metadata["FILEVER"] = (file_version, "File version")
         metadata["INSTRUME"] = "WFI"
         metadata["SICBROID"] = mac.sources["sicbro_id"].iloc[k]
         metadata["RADESYS"] = "ICRS"
@@ -221,12 +249,11 @@ def do_target_photometry(
 
         # replace nans and negatives with 0
         quality = np.zeros(mac.nt, dtype=int)
-        expnumber = mac.cadenceno
-        flux = mac.targets_prf_flux[:, i]
-        flux_err = mac.targets_prf_flux_err[:, i]
+        flux = mac.lcs[k]["psf"]["flux"]
+        flux_err = mac.lcs[k]["psf"]["flux_err"]
 
         # quality flag: nans from PRF fitting
-        quality[~np.isfinite(flux)] += 1
+        quality[~np.isfinite(mac.lcs[k]["psf"]["flux"])] += 1
         # quality flag: non invertible matrix
         quality[flux == -1e6] += 2
         # quality flag: negative fluxes
@@ -238,14 +265,24 @@ def do_target_photometry(
         flux_err[~pos_mask] = np.nan
 
         data = {
-            "time": mac.time,
+            "time": mac.lcs[k]["psf"]["time"],
             "flux": flux,
             "flux_err": flux_err,
-            "cadenceno": expnumber,
-            "quality": quality,
+            "cadenceno": mac.cadenceno,
+            "quality": mac.lcs[k]["psf"]["quality"],
         }
+        metadata["chi2"] = mac.lcs[k]["psf"]["chi2"]
+        metadata["quality_psf"] = mac.lcs[k]["psf"]["quality"]
+        metadata["flux_ap"] = mac.lcs[k]["aperture"]["flux"]
+        metadata["flux_err_ap"] = mac.lcs[k]["aperture"]["flux_err"]
+        metadata["flfrcsap_ap"] = mac.lcs[k]["aperture"]["flfrcsap"]
+        metadata["crowdsap_ap"] = mac.lcs[k]["aperture"]["crowdsap"]
+        metadata["centroid_col"] = mac.lcs[k]["aperture"]["centroid_x"]
+        metadata["centroid_row"] = mac.lcs[k]["aperture"]["centroid_y"]
+        metadata["quality_ap"] = mac.lcs[k]["aperture"]["quality"]
+        
         fid = f"{metadata['SICBROID']:08}"
-        lc_dir = f"{DATPATH}/lcs_v2/{fid[:5]}"
+        lc_dir = f"{DATPATH}/lcs_v{file_version}/{fid[:5]}"
         if not os.path.isdir(lc_dir):
             os.makedirs(lc_dir)
 
@@ -292,6 +329,27 @@ if __name__ == "__main__":
         default=False,
         help="Fit blended objects to 'target' within 0.2 arcseconds.",
     )
+    parser.add_argument(
+        "--image-ver",
+        dest="image_ver",
+        type=str,
+        default="1.1",
+        help="Input image file version.",
+    )
+    parser.add_argument(
+        "--prf-ver",
+        dest="prf_ver",
+        type=str,
+        default="3",
+        help="PRF model version.",
+    )
+    parser.add_argument(
+        "--wet-run",
+        dest="wet_run",
+        type=bool,
+        default=False,
+        help="Run the photometry on the actual data but only 1000 frames.",
+    )
     parser.add_argument("--log", dest="log", default=0, help="Logging level")
     args = parser.parse_args()
 
@@ -310,6 +368,8 @@ if __name__ == "__main__":
 
     log.info(args)
 
+    tstart = datetime.now()
+
     exit = do_target_photometry(
         target=args.target,
         FIELD=3,
@@ -320,8 +380,11 @@ if __name__ == "__main__":
         fit_blends=args.fit_blends,
         blend_limit=args.blend_limit,
         nthreads=4,  # set to None to use all available threads
+        image_version=args.image_ver,
+        prf_version=args.prf_ver,
+        test_run=args.wet_run,
     )
 
     with open(f"../logs/photometry_{args.filter}_cutout.log", "a") as f:
-        f.write(f"{datetime.now()} - Target {args.target} exit code: {exit}\n")
+        f.write(f"{tstart} - {datetime.now()} - Target {args.target} exit code: {exit}\n")
     log.info(f"Photometry done for target {args.target} with exit code {exit}.")
