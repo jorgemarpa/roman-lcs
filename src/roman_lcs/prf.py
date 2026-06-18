@@ -250,14 +250,14 @@ def generate_chromatic_psf_library(
     print(f"Generating PSF library for {filter_name} {detector}")
     print(f"Wavelength range: {wavelens_um[0]:.2f} - {wavelens_um[-1]:.2f} um, step: {step_um:.2f} um")
     print(f"Total Positions: {len(positions)}")
-    for pos in tqdm(positions, total=len(positions), desc=f"Processing positions"):
+    for pos in tqdm(positions, total=len(positions), desc="Processing positions"):
         wfi.detector_position = pos
         pos_key = f"{pos[0]}_{pos[1]}"
         psf_library[pos_key] = {}
         for wl in tqdm(
             wavelens_um,
             total=len(wavelens_um),
-            desc=f"Processing wavelength",
+            desc="Processing wavelength",
             leave=False,
         ):
             wl_meters = wl * 1e-6

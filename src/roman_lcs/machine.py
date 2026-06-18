@@ -2,25 +2,14 @@
 Defines the main Machine object that fit a mean PRF model to sources
 """
 
-from typing import Any, Optional, Union
+from typing import Optional
 
 import astropy.units as u
-import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
-from astropy.stats import sigma_clip
-from scipy import sparse, stats
+from scipy import sparse
 from tqdm import tqdm
-
-from .utils import (
-    _find_uncontaminated_pixels,
-    _make_A_polar,
-    solve_linear_model,
-    sparse_lessthan,
-    threshold_bin,
-    weighted_std,
-)
 
 
 class Machine(object):

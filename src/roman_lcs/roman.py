@@ -16,11 +16,10 @@ from roman_cuts import RomanCuts
 from scipy import ndimage, sparse
 from tqdm import tqdm
 
-from . import __version__
-from .aperture import *
+from .aperture import compute_CROWDSAP, compute_FLFRCSAP
 from .machine import Machine
 from .prf import RomanPRF
-from .utils import _make_A_cartesian, _make_A_polar, solve_linear_model
+from .utils import _make_A_cartesian, solve_linear_model
 
 log = logging.getLogger(__name__)
 
