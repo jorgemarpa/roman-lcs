@@ -466,42 +466,6 @@
   
 </li>
         
-          <li class="md-nav__item">
-  <a href="#src.roman_lcs.Machine.build_shape_model" class="md-nav__link">
-    <span class="md-ellipsis">
-      build_shape_model
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#src.roman_lcs.Machine.plot_shape_model" class="md-nav__link">
-    <span class="md-ellipsis">
-      plot_shape_model
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#src.roman_lcs.Machine.get_psf_metrics" class="md-nav__link">
-    <span class="md-ellipsis">
-      get_psf_metrics
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#src.roman_lcs.Machine.fit_model" class="md-nav__link">
-    <span class="md-ellipsis">
-      fit_model
-    </span>
-  </a>
-  
-</li>
-        
       </ul>
     </nav>
   
@@ -708,42 +672,6 @@
   
 </li>
         
-          <li class="md-nav__item">
-  <a href="#src.roman_lcs.Machine.build_shape_model" class="md-nav__link">
-    <span class="md-ellipsis">
-      build_shape_model
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#src.roman_lcs.Machine.plot_shape_model" class="md-nav__link">
-    <span class="md-ellipsis">
-      plot_shape_model
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#src.roman_lcs.Machine.get_psf_metrics" class="md-nav__link">
-    <span class="md-ellipsis">
-      get_psf_metrics
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#src.roman_lcs.Machine.fit_model" class="md-nav__link">
-    <span class="md-ellipsis">
-      fit_model
-    </span>
-  </a>
-  
-</li>
-        
       </ul>
     </nav>
   
@@ -832,14 +760,9 @@ each linear components as explained by
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">column</span><span class="p">:</span> <span class="n"><span title="numpy.typing.ArrayLike">ArrayLike</span></span><span class="p">,</span>
 </span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">row</span><span class="p">:</span> <span class="n"><span title="numpy.typing.ArrayLike">ArrayLike</span></span><span class="p">,</span>
 </span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="n">time_mask</span><span class="p">:</span> <span class="n"><span title="typing.Optional">Optional</span></span><span class="p">[</span><span class="n"><span title="numpy.typing.ArrayLike">ArrayLike</span></span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="n">n_r_knots</span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">=</span> <span class="mi">10</span><span class="p">,</span>
-</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    <span class="n">n_phi_knots</span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">=</span> <span class="mi">15</span><span class="p">,</span>
-</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    <span class="n">rmin</span><span class="p">:</span> <span class="n"><span title="float">float</span></span> <span class="o">=</span> <span class="mf">0.1</span><span class="p">,</span>
-</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>    <span class="n">rmax</span><span class="p">:</span> <span class="n"><span title="float">float</span></span> <span class="o">=</span> <span class="mi">2</span><span class="p">,</span>
-</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>    <span class="n">cut_r</span><span class="p">:</span> <span class="n"><span title="float">float</span></span> <span class="o">=</span> <span class="mf">0.2</span><span class="p">,</span>
-</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>    <span class="n">sparse_dist_lim</span><span class="p">:</span> <span class="n"><span title="float">float</span></span> <span class="o">=</span> <span class="mi">4</span><span class="p">,</span>
-</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>    <span class="n">sources_flux_column</span><span class="p">:</span> <span class="n"><span title="str">str</span></span> <span class="o">=</span> <span class="s2">&quot;flux&quot;</span><span class="p">,</span>
-</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="n">sparse_dist_lim</span><span class="p">:</span> <span class="n"><span title="float">float</span></span> <span class="o">=</span> <span class="mi">4</span><span class="p">,</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    <span class="n">sources_flux_column</span><span class="p">:</span> <span class="n"><span title="str">str</span></span> <span class="o">=</span> <span class="s2">&quot;flux&quot;</span><span class="p">,</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -926,9 +849,6 @@ Use this to e.g. select frames with low VA, or no focus change</p>
         </li>
         <li class="doc-section-item field-body">
             <b><code>n_r_knots</code></b>
-              (<code><span title="int">int</span></code>, default:
-                  <code>10</code>
-)
           –
           <div class="doc-md-description">
             <p>Number of radial knots in the spline model.</p>
@@ -936,9 +856,6 @@ Use this to e.g. select frames with low VA, or no focus change</p>
         </li>
         <li class="doc-section-item field-body">
             <b><code>n_phi_knots</code></b>
-              (<code><span title="int">int</span></code>, default:
-                  <code>15</code>
-)
           –
           <div class="doc-md-description">
             <p>Number of azimuthal knots in the spline model.</p>
@@ -968,9 +885,6 @@ will be fit. (arcseconds)</p>
         </li>
         <li class="doc-section-item field-body">
             <b><code>rmin</code></b>
-              (<code><span title="float">float</span></code>, default:
-                  <code>0.1</code>
-)
           –
           <div class="doc-md-description">
             <p>The minimum radius for the PRF model to be fit. (arcseconds)</p>
@@ -978,9 +892,6 @@ will be fit. (arcseconds)</p>
         </li>
         <li class="doc-section-item field-body">
             <b><code>rmax</code></b>
-              (<code><span title="float">float</span></code>, default:
-                  <code>2</code>
-)
           –
           <div class="doc-md-description">
             <p>The maximum radius for the PRF model to be fit. (arcseconds)</p>
@@ -988,9 +899,7 @@ will be fit. (arcseconds)</p>
         </li>
         <li class="doc-section-item field-body">
             <b><code>cut_r</code></b>
-              (<code><span title="float">float</span></code>, default:
-                  <code>0.2</code>
-)
+              (<code><span title="float">float</span></code>)
           –
           <div class="doc-md-description">
             <p>Radius distance whithin the shape model only depends on radius and not
@@ -1145,220 +1054,6 @@ the design matrix, options are "linear" or "sqrt".</p>
           </div>
         </li>
     </ul>
-
-
-    </div>
-
-</div>
-
-<div class="doc doc-object doc-function">
-
-
-<h3 id="src.roman_lcs.Machine.build_shape_model" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">build_shape_model</span>
-
-
-</h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_shape_model</span><span class="p">(</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">flux_cut_off</span><span class="p">:</span> <span class="n"><span title="float">float</span></span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">frame_index</span><span class="p">:</span> <span class="n"><span title="typing.Union">Union</span></span><span class="p">[</span><span class="n"><span title="str">str</span></span><span class="p">,</span> <span class="n"><span title="int">int</span></span><span class="p">]</span> <span class="o">=</span> <span class="mi">0</span><span class="p">,</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">bin_data</span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">=</span> <span class="mi">0</span><span class="p">,</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">plot</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="o">**</span><span class="n">kwargs</span><span class="p">,</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><span title="typing.Optional">Optional</span></span><span class="p">[</span><span class="n"><span title="typing.Any">Any</span></span><span class="p">]</span>
-</span></code></pre></div>
-
-    <div class="doc doc-contents ">
-
-        <p>Builds a sparse model matrix of shape nsources x npixels to be used when
-fitting each source pixels to estimate its PSF photometry</p>
-
-
-<p><span class="doc-section-title">Parameters:</span></p>
-    <ul>
-        <li class="doc-section-item field-body">
-            <b><code>flux_cut_off</code></b>
-              (<code><span title="float">float</span></code>, default:
-                  <code>1</code>
-)
-          –
-          <div class="doc-md-description">
-            <p>the flux in COUNTS at which to stop evaluating the model!</p>
-          </div>
-        </li>
-        <li class="doc-section-item field-body">
-            <b><code>frame_index</code></b>
-              (<code><span title="string">string</span> or <span title="int">int</span></code>, default:
-                  <code>0</code>
-)
-          –
-          <div class="doc-md-description">
-            <p>The frame index used to build the shape model. If "mean" then use the
-mean value across time, this won't work if images are dittered</p>
-          </div>
-        </li>
-        <li class="doc-section-item field-body">
-            <b><code>bin_data</code></b>
-              (<code><span title="boolean">boolean</span></code>, default:
-                  <code>0</code>
-)
-          –
-          <div class="doc-md-description">
-            <p>Bin flux data spatially to increase SNR before fitting the shape model</p>
-          </div>
-        </li>
-        <li class="doc-section-item field-body">
-            <b><code>plot</code></b>
-              (<code><span title="boolean">boolean</span></code>, default:
-                  <code>False</code>
-)
-          –
-          <div class="doc-md-description">
-            <p>Make a diagnostic plot</p>
-          </div>
-        </li>
-        <li class="doc-section-item field-body">
-            <b><code>**kwargs</code></b>
-          –
-          <div class="doc-md-description">
-            <p>Keyword arguments to be passed to <code>_get_source_mask()</code></p>
-          </div>
-        </li>
-    </ul>
-
-
-    </div>
-
-</div>
-
-<div class="doc doc-object doc-function">
-
-
-<h3 id="src.roman_lcs.Machine.plot_shape_model" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">plot_shape_model</span>
-
-
-</h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">plot_shape_model</span><span class="p">(</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">frame_index</span><span class="p">:</span> <span class="n"><span title="typing.Union">Union</span></span><span class="p">[</span><span class="n"><span title="str">str</span></span><span class="p">,</span> <span class="n"><span title="int">int</span></span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;mean&quot;</span><span class="p">,</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">bin_data</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">clean</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><span title="typing.Any">Any</span></span>
-</span></code></pre></div>
-
-    <div class="doc doc-contents ">
-
-        <p>Diagnostic plot of shape model.</p>
-
-
-<p><span class="doc-section-title">Parameters:</span></p>
-    <ul>
-        <li class="doc-section-item field-body">
-            <b><code>frame_index</code></b>
-              (<code><span title="string">string</span> or <span title="int">int</span></code>, default:
-                  <code>&#39;mean&#39;</code>
-)
-          –
-          <div class="doc-md-description">
-            <p>The frame index used to plot the shape model, if "mean" then use the
-mean value across time</p>
-          </div>
-        </li>
-        <li class="doc-section-item field-body">
-            <b><code>bin_data</code></b>
-              (<code><span title="bool">bool</span></code>, default:
-                  <code>False</code>
-)
-          –
-          <div class="doc-md-description">
-            <p>Bin or not the pixel data in a 2D historgram, default is False.</p>
-          </div>
-        </li>
-    </ul>
-
-
-<p><span class="doc-section-title">Returns:</span></p>
-    <ul>
-        <li class="doc-section-item field-body">
-<b><code>fig</code></b> (              <code><span title="matplotlib.Figure">Figure</span></code>
-)          –
-          <div class="doc-md-description">
-            <p>Figure.</p>
-          </div>
-        </li>
-    </ul>
-
-
-    </div>
-
-</div>
-
-<div class="doc doc-object doc-function">
-
-
-<h3 id="src.roman_lcs.Machine.get_psf_metrics" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">get_psf_metrics</span>
-
-
-</h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">get_psf_metrics</span><span class="p">(</span><span class="n">npoints_per_pixel</span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">=</span> <span class="mi">10</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span>
-</span></code></pre></div>
-
-    <div class="doc doc-contents ">
-
-        <p>Computes three metrics for the PSF model:
-    source_psf_fraction: the amount of PSF in the data. Tells how much of a
-        sources is used to estimate the PSF, values are in between [0, 1].
-    perturbed_ratio_mean: the ratio between the mean model and perturbed model
-        for each source. Usefull to find when the time model affects the
-        mean value of the light curve.
-    perturbed_std: the standard deviation of the perturbed model for each
-        source. USeful to find when the time model introduces variability in the
-        light curve.</p>
-<p>If npoints_per_pixel &gt; 0, it creates high npoints_per_pixel shape models for
-each source by dividing each pixels into a grid of
-[npoints_per_pixel x npoints_per_pixel]. This provides a better estimate of
-<code>source_psf_fraction</code>.</p>
-
-
-<p><span class="doc-section-title">Parameters:</span></p>
-    <ul>
-        <li class="doc-section-item field-body">
-            <b><code>npoints_per_pixel</code></b>
-              (<code><span title="int">int</span></code>, default:
-                  <code>10</code>
-)
-          –
-          <div class="doc-md-description">
-            <p>Value in which each pixel axis is split to increase npoints_per_pixel.
-Default is 0 for no subpixel npoints_per_pixel.</p>
-          </div>
-        </li>
-    </ul>
-
-
-    </div>
-
-</div>
-
-<div class="doc doc-object doc-function">
-
-
-<h3 id="src.roman_lcs.Machine.fit_model" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">fit_model</span>
-
-
-</h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">fit_model</span><span class="p">(</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">prior_mu</span><span class="p">:</span> <span class="n"><span title="typing.Optional">Optional</span></span><span class="p">[</span><span class="n"><span title="numpy.ndarray">ndarray</span></span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">prior_sigma</span><span class="p">:</span> <span class="n"><span title="typing.Optional">Optional</span></span><span class="p">[</span><span class="n"><span title="numpy.ndarray">ndarray</span></span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">compute_model</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span>
-</span></code></pre></div>
-
-    <div class="doc doc-contents ">
-
-        <p>Finds the best fitting weights for every source simultaneously</p>
 
 
     </div>
