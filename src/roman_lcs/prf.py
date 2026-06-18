@@ -289,7 +289,7 @@ def generate_chromatic_psf_library(
             hdul[3].header["HISTORY"] = "Applied inter-pixel capacitance (IPC)"
 
             if dir_path is not None:
-                output_file = os.path.join(dir_path, f"psf_{filter_name}_{detector}_{pos_key}_{wl:.2f}um.fits")
+                output_file = os.path.join(dir_path, f"roman_psf_{filter_name}_{detector}_{pos_key}_{wl:.2f}um.fits")
                 hdul.writeto(output_file, overwrite=True)
             
             psf_library[pos_key][wl] = over_prf_dist
