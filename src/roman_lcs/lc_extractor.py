@@ -18,13 +18,13 @@ from tqdm import tqdm
 
 from .aperture import compute_CROWDSAP, compute_FLFRCSAP
 from .machine import Machine
-from .prf import RomanPRF
+from .prf import RomanSimplePSF
 from .utils import _make_A_cartesian, solve_linear_model
 
 log = logging.getLogger(__name__)
 
 
-class RomanMachine(Machine):
+class LCExtractor(Machine):
     """
     Subclass of Machine for working with Roman data.
     """
@@ -82,8 +82,6 @@ class RomanMachine(Machine):
         ----------
         meta : dictionary
             Meta data information related to the FFI
-        wcs : astropy.wcs
-            World coordinates system solution for the FFI. Used for plotting.
         flux_3d : numpy.ndarray
             2D image representation of the FFI, used for plotting. Has shape [n_times,
             image_height, image_width]
@@ -94,7 +92,6 @@ class RomanMachine(Machine):
         self.ref_frame = 0
         self.cadenceno = cadenceno
 
-        self.WCSs = wcs
         self.meta = meta
         self.dithered = dithered
 
@@ -119,6 +116,7 @@ class RomanMachine(Machine):
             sources,
             column,
             row,
+            wcs=wcs,
             sparse_dist_lim=sparse_dist_lim,
             sources_flux_column=sources_flux_column,
         )
@@ -129,7 +127,7 @@ class RomanMachine(Machine):
             self.quality_mask = quality_mask
 
     def __repr__(self) -> str:
-        return f"RomanMachine (N sources, N times, N pixels): {self.shape}"
+        return f"LCExtractor (N sources, N times, N pixels): {self.shape}"
 
     @property
     def flux_3d(self) -> np.ndarray:
@@ -163,9 +161,9 @@ class RomanMachine(Machine):
         sources: Optional[pd.DataFrame] = None,
         file_version: str = "1.0",
         **kwargs,
-    ) -> "RomanMachine":
+    ) -> "LCExtractor":
         """
-        Reads data from files and initiates a new object of RomanMachine class.
+        Reads data from files and initiates a new object of LCExtractor class.
         Two options are available:
         1. If providing pixel coordinates with `cutout_origin`,
             the data will be fixed tothe pixel grid, no dithering
@@ -195,7 +193,7 @@ class RomanMachine(Machine):
 
         Returns
         -------
-        RomanMachine : Machine object
+        LCExtractor : Machine object
             A Machine class object built from the FFI.
         """
         # check if source catalog is pandas DF
@@ -233,8 +231,8 @@ class RomanMachine(Machine):
         # ra,dec and row,column are 3D arrays
         # with shape of [n_times, axis1, axis2]
         #####
-        log.info("Initializing RomanMachine object...")
-        return RomanMachine(
+        log.info("Initializing LCExtractor object...")
+        return LCExtractor(
             time,
             flux,
             flux_err,
@@ -337,38 +335,26 @@ class RomanMachine(Machine):
         """
         bright_mask = self.sources[self.sources_mag_column] <= magnitude_limit
 
-        mask = [
+        mask = np.array([
             np.hypot(self.ra[0] - s.ra, self.dec[0] - s.dec) < tolerance
             for _, s in self.sources[bright_mask].iterrows()
-        ]
-        mask = np.array(mask).sum(axis=0) > 0
+        ])
+        mask = mask.sum(axis=0) > 0
 
         return mask
 
     def _pointing_offset(self) -> None:
         """
-        Computes pointing offsets due to dittering
+        Computes pointing offsets due to dithering
         """
         self.ra_offset = (self.ra - self.ra[0]).mean(axis=1)
         self.dec_offset = (self.dec - self.dec[0]).mean(axis=1)
-
-    # def _remove_bad_pixels_from_source_mask(self) -> None:
-    #     """
-    #     Combines source_mask and uncontaminated_pixel_mask with saturated and bright
-    #     pixel mask.
-    #     """
-    #     self.source_mask = self.source_mask.multiply(self.pixel_mask).tocsr()
-    #     self.source_mask.eliminate_zeros()
-    #     self.uncontaminated_source_mask = self.uncontaminated_source_mask.multiply(
-    #         self.pixel_mask
-    #     ).tocsr()
-    #     self.uncontaminated_source_mask.eliminate_zeros()
 
     def load_prf_model(
         self,
         input: Optional[str] = None,
         plot: bool = False,
-    ) -> Optional[matplotlib.figure.Figure]:
+    ) -> Optional[matplotlib.figure.Figure | matplotlib.axes.Axes]:
         """
         Load and process a prf model for the sources.
 
@@ -387,14 +373,28 @@ class RomanMachine(Machine):
             This function does not return any value. It modifies the internal state of the object
             by loading the shape model and potentially creating plots.
         """
+        if not getattr(self, "meta", None):
+            raise AttributeError(
+                "self.meta is not set; populate meta before calling load_prf_model"
+            )
+
+        if not isinstance(self.meta, dict):
+            raise TypeError(
+                f"expected self.meta to be dict, got {type(self.meta).__name__}"
+            )
+
+        sca = self.meta.get("SCA")
+        filt = self.meta.get("FILTER")
+        if sca is None or filt is None:
+            raise KeyError("self.meta must contain 'SCA' and 'FILTER' keys")
+
         # check if file exists and is the right format
-        self.prf_model = RomanPRF(
-            file_name=input, sca=self.meta["SCA"], filter=self.meta["FILTER"]
-        )
+        self.prf_model = RomanSimplePSF(file_name=input, sca=sca, filter=filt)
+
         log.info(f"Loading shape model from {input}")
         if plot:
             return self.plot_prf_model(hires=True, stretch="log")
-        return
+        return None
 
     def draw_scene(self, frame_index: int = 0) -> None:
         """
@@ -421,7 +421,6 @@ class RomanMachine(Machine):
                 corner=(row.min(), col.min()),
                 shape=self.image_shape,
             )[-1]
-            # eval = np.rot90(eval.reshape(self.image_shape), k=1).ravel()
             scene_model.append(eval.ravel())
         self.scene_model = np.array(scene_model)
         # we assume the at least one source will be fully in the cutout, so we 
@@ -436,9 +435,9 @@ class RomanMachine(Machine):
         ax: Optional[matplotlib.axes.Axes] = None,
         hires: bool = False,
         stretch: str = "linear",
-    ) -> matplotlib.axes.Axes:
+    ) -> Optional[matplotlib.figure.Figure | matplotlib.axes.Axes]:
         """
-        Plot the Point Response Function (PRF) model for the current RomanMachine instance.
+        Plot the Point Response Function (PRF) model for the current LCExtractor instance.
 
         This function visualizes the PRF either at high resolution (supersampled) or at the
         native pixel sampling, depending on the `hires` flag. The PRF is computed using the
@@ -463,10 +462,10 @@ class RomanMachine(Machine):
             # Create marginal Axes
             # ax_histx (top): positioned above the main axes
             ax_histx = ax_main.inset_axes(
-                [0, 1.05, 1, 0.25], sharex=ax_main
+                (0, 1.05, 1, 0.25), sharex=ax_main
             )  # [left, bottom, width, height]
             # ax_histy (right): positioned to the right of the main axes
-            ax_histy = ax_main.inset_axes([1.05, 0, 0.25, 1], sharey=ax_main)
+            ax_histy = ax_main.inset_axes((1.05, 0, 0.25, 1), sharey=ax_main)
 
         # widen the annotated type so mypy accepts both QuadMesh and PathCollection
         cbar: Any = None
@@ -488,10 +487,15 @@ class RomanMachine(Machine):
         ).T
 
         cmap = simple_norm(model, stretch, percent=99.9)
-        if hires:
-            ax_main.set_title(f"Super Sampled PRF | {self.meta['FILTER']}", y=1.1)
+        if isinstance(self.meta, dict) and "FILTER" in self.meta.keys():
+            filt = self.meta["FILTER"]
         else:
-            ax_main.set_title(f"PRF in Cutout Pixel Grid | {self.meta['FILTER']}")
+            filt = ""
+            
+        if hires:
+            ax_main.set_title(f"Super Sampled PRF | {filt}", y=1.1)
+        else:
+            ax_main.set_title(f"PRF in Cutout Pixel Grid | {filt}")
 
         cbar = ax_main.pcolormesh(
             dcol * self.pixel_scale.value,
@@ -585,16 +589,16 @@ class RomanMachine(Machine):
         ax.set_ylim(self.row_3d.min() - 3, self.row_3d.max() + 3)
 
         ax.set_title(
-            f"{self.meta['MISSION']} | {self.meta['DETECTOR']} | {self.meta['FILTER']}\n"
-            f"Frame {self.cadenceno[frame_index]} | JD {self.time[frame_index]} \n"
+            f"{self.meta['MISSION']} | {self.meta['DETECTOR']} | {self.meta['FILTER']}\n"  # type: ignore
+            f"Frame {self.cadenceno[frame_index]} | JD {self.time[frame_index]} \n"  # type: ignore
             f"{title}"
         )
 
         if sources:
             srow, scol = self.pixel_coordinates(frame_index=frame_index)
             # marker size correlates with source magnitude
-            size = self.sources.loc[:, self.meta["FILTER"]].values
-            size = np.clip(size, 15, 23)
+            size = self.sources.loc[:, self.meta["FILTER"]].to_numpy(dtype=float)  # type: ignore
+            size = np.clip(size, 15.0, 23.0)
             size = (23 - size) / (23 - 15)
             size = 5 + (50 - 5) * size
             ax.scatter(
@@ -659,7 +663,7 @@ class RomanMachine(Machine):
 
         return ax
 
-    def get_lightcurves(self, mode: str = "lk") -> None:
+    def get_lightcurves(self, mode: str = "lk") -> dict:
         """
         Bundle light curves as `lightkurve` objects is `mode=="lk"`
         or as a DataFrame if `mode=="table"'.
@@ -689,47 +693,8 @@ class RomanMachine(Machine):
             return lcs
         elif mode == "table":
             raise NotImplementedError
-
-    def _get_bkg_model_terms(
-        self,
-        target_idx: List[int] = [0],
-        gradient: bool = True,
-        bkg_poly_order: int = 3,
-    ):
-        """
-        Returns background model terms for the given target index.
-
-        Parameters
-        ----------
-        target_idx : int or list of ints
-            Index of the target for which to compute background model terms.
-            If a list is provided, the first element will be used.
-        gradient : bool
-            Whether to include gradient terms in the background model.
-        bkg_poly_order : int
-            Order of the polynomial used for background model fitting.
-
-        Returns
-        -------
-        bkg_terms : numpy.ndarray
-            Array of background model terms for the given target index.
-            The shape of the array is (n_terms, n_pixels), where n_terms is the
-            number of background model terms and n_pixels is the number of pixels
-            in the image.
-        """
-        tpfshape = self.image_shape
-        bkg_terms = []
-        bkg_terms.append(np.ones(tpfshape).ravel())
-
-        if gradient:
-            dx_ravel = self.dcolumn[target_idx].ravel()
-            dy_ravel = self.drow[target_idx].ravel()
-
-            for i in range(1, bkg_poly_order + 1):
-                for j in range(0, i + 1):
-                    bkg_terms.append(dx_ravel**j * dy_ravel ** (i - j))
-
-        return np.array(bkg_terms)
+        else:
+            raise ValueError(f"Unsupported mode: {mode!r}")
 
     def fit_prf_photometry(
         self,
@@ -757,8 +722,8 @@ class RomanMachine(Machine):
 
         if model_bkg:
             bkg_terms = _make_A_cartesian(
-                x=self.dcolumn[targets[0] if len(targets) > 0 else 0].ravel(),
-                y=self.drow[targets[0] if len(targets) > 0 else 0].ravel(),
+                x=self.dcolumn[targets[0] if len(targets) > 0 else 0].ravel(), # type: ignore
+                y=self.drow[targets[0] if len(targets) > 0 else 0].ravel(), # type: ignore
                 n_knots=bkg_nknots,
             ).T
 
@@ -800,16 +765,14 @@ class RomanMachine(Machine):
                 bkg_star_model = sparse.csr_matrix(bkg_star_model)
                 # stack linear model with target, bkg stars and bkg signal
                 model = sparse.vstack([targets_models, bkg_star_model]).tocsr()
-                # model = np.vstack([targets_models, bkg_star_model])
                 # prior_mu = np.append(self.source_flux_estimates[targets], [1])
                 # prior_sigma = np.ones(prior_mu.shape[0]) * 5 * np.abs(prior_mu) ** 0.5
             else:
                 model = mean_model
             if model_bkg:
                 model = sparse.vstack([model, bkg_terms]).tocsr()
-                # model = np.vstack([model, bkg_terms])
-                # prior_mu = np.concatenate([prior_mu, np.ones(bkg_terms.shape[0])])
-                # prior_sigma = np.ones(prior_mu.shape[0]) * 5 * np.abs(prior_mu) ** 0.5
+                # prior_mu = np.concatenate([prior_mu, np.zeros(bkg_terms.shape[0])])
+                # prior_sigma = np.concatenate([prior_mu[:len(targets)+1], np.zeros(bkg_terms.shape[0])])
             # solve linear model with current flux
             try:
                 w, werr = solve_linear_model(
@@ -945,11 +908,11 @@ class RomanMachine(Machine):
             [
                 [
                     np.average(
-                        self.dcolumn[tar][_aperture_mask[tar]],
+                        self.dcolumn[tar][_aperture_mask[tar]], # type: ignore
                         weights=self.flux[frame_index, _aperture_mask[tar]],
                     ),
                     np.average(
-                        self.drow[tar][_aperture_mask[tar]],
+                        self.drow[tar][_aperture_mask[tar]], # type: ignore
                         weights=self.flux[frame_index, _aperture_mask[tar]],
                     ),
                 ]
@@ -978,7 +941,7 @@ class RomanMachine(Machine):
         aperture_metrics = np.zeros((self.nt, len(targets), 2))
         targets_centroid = np.zeros((self.nt, len(targets), 2))
         targets_ap_quality = np.zeros((self.nt, len(targets)))
-        aperture_masks = []
+        aperture_masks_list = []
         for tdx in tqdm(
             range(self.nt),
             desc="Performing aperture photometry",
@@ -996,9 +959,9 @@ class RomanMachine(Machine):
             aperture_metrics[tdx] = ap_flux[:, 2:4]
             targets_centroid[tdx] = ap_flux[:, 4:6]
             targets_ap_quality[tdx] = ap_flux[:, 6]
-            aperture_masks.append(aperture_mask)
+            aperture_masks_list.append(aperture_mask)
 
-        aperture_masks = np.array(aperture_masks)
+        aperture_masks = np.array(aperture_masks_list)
 
         if not hasattr(self, "lcs"):
             self.lcs = {}

@@ -17,7 +17,7 @@ from . import PACKAGEDIR
 
 PATH = os.path.dirname(os.path.dirname(PACKAGEDIR))
 
-class RomanPRF(object):
+class RomanSimplePSF(object):
     """
     Class to manage PSF loading and evaluation for Roman WFI observations.
     
@@ -184,6 +184,15 @@ class RomanPRF(object):
         return self.interp_func((dy, dx))
 
 
+class PerturbedPSF(RomanSimplePSF):
+    """
+    A class for handling perturbed PSF data.
+    """
+
+    def __init__(self, file_name: str, sca: int, filter: str):
+        super().__init__(file_name, sca, filter)
+
+    
 
 
 def apply_wfi_detector_effects(

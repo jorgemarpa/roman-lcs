@@ -9,7 +9,6 @@ __version__ = metadata.version("roman_lcs")
 
 PACKAGEDIR = os.path.abspath(os.path.dirname(__file__))
 
-from .machine import Machine  # noqa
-from .roman import RomanMachine  # noqa
+from .lc_extractor import LCExtractor  # noqa
 
-__all__ = ["Machine", "RomanMachine"]
+__all__ = ["LCExtractor"]
