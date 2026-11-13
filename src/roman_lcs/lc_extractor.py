@@ -526,8 +526,8 @@ class LCExtractor(Machine):
             labelleft=False,
         )
         plt.colorbar(cbar, ax=ax_main, shrink=0.7, location="bottom", label="Normalized Flux")
-        ax_main.set_xlabel("$\Delta$ Column [arcsec]")
-        ax_main.set_ylabel("$\Delta$ Row [arcsec]")
+        ax_main.set_xlabel(r"$\Delta$ Column [arcsec]")
+        ax_main.set_ylabel(r"$\Delta$ Row [arcsec]")
         ax_main.set_aspect("equal")
 
         return ax
