@@ -558,7 +558,8 @@ class LCExtractor(Machine):
         """
         if ax is None:
             _ = plt.figure(figsize=(10, 10))
-            ax = plt.subplot(projection=self.WCSs[frame_index], label="overlays")
+            # ax = plt.subplot(projection=self.WCSs[frame_index], label="overlays")
+            ax = plt.subplot()
 
         if data == "image":
             to_plot = self.flux_3d[frame_index]
@@ -571,25 +572,26 @@ class LCExtractor(Machine):
             title = "Scene Model"
         else:
             raise ValueError
-        norm = simple_norm(to_plot.ravel(), "asinh", percent=95)
+        norm = simple_norm(to_plot.ravel(), "asinh", percent=99)
 
         bar = ax.pcolormesh(
-            self.column_3d[frame_index],
-            self.row_3d[frame_index],
+            self.ra_3d[frame_index],
+            self.dec_3d[frame_index],
             to_plot,
             norm=norm,
             cmap=plt.cm.viridis,
             rasterized=True,
         )
-        plt.colorbar(bar, ax=ax, shrink=0.7, label=r"Flux ($e^{-}s^{-1}$)")
+        ax.set_aspect("equal", adjustable="box")
+        plt.colorbar(bar, ax=ax, shrink=0.7, label=r"Flux [DN/s]")
         ax.grid(True, which="major", axis="both", ls="-", color="w", alpha=0.7)
-        ax.set_xlabel("R.A. [hh:mm]")
+        ax.set_xlabel("R.A. [deg]")
         ax.set_ylabel("Decl. [deg]")
         ax.set_xlim(self.column_3d.min() - 3, self.column_3d.max() + 3)
         ax.set_ylim(self.row_3d.min() - 3, self.row_3d.max() + 3)
 
         ax.set_title(
-            f"{self.meta['MISSION']} | {self.meta['DETECTOR']} | {self.meta['FILTER']}\n"  # type: ignore
+            f"Roman | {self.meta['SCA']} | {self.meta['FILTER']}\n"  # type: ignore
             f"Frame {self.cadenceno[frame_index]} | JD {self.time[frame_index]} \n"  # type: ignore
             f"{title}"
         )
@@ -610,8 +612,6 @@ class LCExtractor(Machine):
                 linewidths=0.1,
                 alpha=0.8,
             )
-
-        ax.set_aspect("equal", adjustable="box")
 
         return ax
 
