@@ -25,6 +25,9 @@ roman-datamodels = "^1.0.0"
 roman-cuts = {git = "https://github.com/jorgemarpa/roman-cuts.git", branch = "romcom"}
 roman-epsf = {git = "https://github.com/jorgemarpa/roman-epsf.git"}
 
+[tool.poetry.scripts]
+roman-lc-extract = "roman_lcs.scripts.extract_lightcurve:main"
+
 [tool.poetry.group.dev.dependencies]
 mkdocs = "^1.6.0"
 mkdocstrings = {version = "^0.29.0", extras = ["python", "numpy-style"]}

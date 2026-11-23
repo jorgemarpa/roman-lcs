@@ -9,6 +9,15 @@ __version__ = metadata.version("roman_lcs")
 
 PACKAGEDIR = os.path.abspath(os.path.dirname(__file__))
 
-from .lc_extractor import LCExtractor  # noqa
+from .lc_extractor import LCExtractor, PRFFitFlag  # noqa
+from .machine import Machine  # noqa
+from .prf import PhotutilsPSFAdapter  # noqa
+from .utils import compute_lightcurve_metrics
 
-__all__ = ["LCExtractor"]
+__all__ = [
+    "LCExtractor",
+    "Machine",
+    "PhotutilsPSFAdapter",
+    "PRFFitFlag",
+    "compute_lightcurve_metrics",
+]

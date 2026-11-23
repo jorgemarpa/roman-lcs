@@ -2,7 +2,8 @@
 
 import logging
 import os
-from typing import Any, List, Optional, Tuple, Union
+from enum import IntFlag
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import astropy.units as u
 import lightkurve as lk
@@ -11,17 +12,91 @@ import matplotlib.figure
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from astropy.coordinates import SkyCoord
+from astropy.io import fits
+from astropy.stats import sigma_clip
 from astropy.visualization import simple_norm
+from astropy.wcs.wcsapi import HighLevelWCSWrapper, SlicedLowLevelWCS
+from astropy.wcs.wcsapi.wrappers.base import BaseWCSWrapper
 from roman_cuts import RomanCuts
 from scipy import ndimage, sparse
 from tqdm import tqdm
 
-from .aperture import compute_CROWDSAP, compute_FLFRCSAP
+from .aperture import (
+    compute_CROWDSAP,
+    compute_FLFRCSAP,
+    correct_aperture_flux,
+    make_snr_optimal_aperture,
+)
 from .machine import Machine
 from .prf import RomanSimplePSF
 from .utils import _make_A_cartesian, solve_linear_model
 
 log = logging.getLogger(__name__)
+
+
+def _format_aperture_key(radius: Union[int, float]) -> str:
+    """
+    Format aperture radius into key string, e.g. 3 -> 'aperture_3pix'.
+    """
+    if isinstance(radius, (int, np.integer)) or (
+        isinstance(radius, (float, np.floating)) and float(radius).is_integer()
+    ):
+        return f"aperture_{int(radius)}pix"
+    return f"aperture_{radius}pix"
+
+
+class PRFFitFlag(IntFlag):
+    """
+    Bitmask flags tracking PRF scene model fitting quality and convergence.
+
+    Attributes
+    ----------
+    SUCCESS : int (0)
+        Fit succeeded and converged normally.
+    NOT_CONVERGED : int (1)
+        Iterative centroid shift did not reach convergence threshold within max iterations.
+    MAX_ITER_REACHED : int (2)
+        Iterative fitting stopped because maximum iterations was reached.
+    LINALG_FAILED : int (4)
+        Linear solver failed (LinAlgError or singular design matrix).
+    NON_FINITE_WEIGHTS : int (8)
+        Linear solve produced non-finite (NaN or Inf) weights or flux errors.
+    INSUFFICIENT_UNMASKED_PIXELS : int (16)
+        Insufficient unmasked pixels in cutout to constrain model.
+    DIVERGED_OFFSET : int (32)
+        Centroid offset step diverged or exceeded physical bound (> 1.5 pix).
+    NEGATIVE_FLUX : int (64)
+        Fitted flux for one or more target stars is negative.
+    HIGH_CHI2 : int (128)
+        Model reduced chi-squared is unusually high (> 10.0).
+    """
+    SUCCESS = 0
+    NOT_CONVERGED = 1 << 0
+    MAX_ITER_REACHED = 1 << 1
+    LINALG_FAILED = 1 << 2
+    NON_FINITE_WEIGHTS = 1 << 3
+    INSUFFICIENT_UNMASKED_PIXELS = 1 << 4
+    DIVERGED_OFFSET = 1 << 5
+    NEGATIVE_FLUX = 1 << 6
+    HIGH_CHI2 = 1 << 7
+
+
+class _SafeWCSWrapper(BaseWCSWrapper):
+    """
+    Wraps a LowLevelWCS to ensure longitude coordinates are normalized to [0, 360)
+    during world_to_pixel transformations. This prevents GWCS from returning NaNs
+    when Astropy's find_coordinate_range normalizes celestial RA coordinates into [-180, 180).
+    """
+
+    def pixel_to_world_values(self, *pixel_arrays):
+        return self._wcs.pixel_to_world_values(*pixel_arrays)
+
+    def world_to_pixel_values(self, *world_arrays):
+        world_list = list(world_arrays)
+        if len(world_list) > 0:
+            world_list[0] = np.asarray(world_list[0]) % 360.0
+        return self._wcs.world_to_pixel_values(*world_list)
 
 
 class LCExtractor(Machine):
@@ -90,7 +165,10 @@ class LCExtractor(Machine):
         """
 
         self.ref_frame = 0
-        self.cadenceno = cadenceno
+        if cadenceno is not None:
+            self.cadenceno = cadenceno 
+        else:
+            self.cadenceno = np.arange(time.shape[0])
 
         self.meta = meta
         self.dithered = dithered
@@ -121,6 +199,8 @@ class LCExtractor(Machine):
             sources_flux_column=sources_flux_column,
         )
         self._mask_pixels()
+        self.median_bkg = None
+        self.bkg_pixel_mask = None
         if quality_mask is None:
             self.quality_mask = np.zeros(len(time), dtype=int)
         else:
@@ -152,6 +232,36 @@ class LCExtractor(Machine):
     @property
     def dec_3d(self) -> np.ndarray:
         return self.dec.reshape((-1, *self.image_shape))
+
+    @property
+    def bkg_flux_3d(self) -> Optional[np.ndarray]:
+        if hasattr(self, "bkg_flux") and self.bkg_flux is not None:
+            return self.bkg_flux.reshape((-1, *self.image_shape))
+        return None
+
+    @property
+    def bkg_flux_err_3d(self) -> Optional[np.ndarray]:
+        if hasattr(self, "bkg_flux_err") and self.bkg_flux_err is not None:
+            return self.bkg_flux_err.reshape((-1, *self.image_shape))
+        return None
+
+    @property
+    def bkg_model_3d(self) -> Optional[np.ndarray]:
+        if hasattr(self, "bkg_model") and self.bkg_model is not None:
+            return self.bkg_model.reshape((-1, *self.image_shape))
+        return None
+
+    @property
+    def bkg_model_err_3d(self) -> Optional[np.ndarray]:
+        if hasattr(self, "bkg_model_err") and self.bkg_model_err is not None:
+            return self.bkg_model_err.reshape((-1, *self.image_shape))
+        return None
+
+    @property
+    def bkg_pixel_mask_3d(self) -> Optional[np.ndarray]:
+        if hasattr(self, "bkg_pixel_mask") and self.bkg_pixel_mask is not None:
+            return self.bkg_pixel_mask.reshape((-1, *self.image_shape))
+        return None
 
     @staticmethod
     def from_file(
@@ -350,6 +460,64 @@ class LCExtractor(Machine):
         self.ra_offset = (self.ra - self.ra[0]).mean(axis=1)
         self.dec_offset = (self.dec - self.dec[0]).mean(axis=1)
 
+    def _compute_median_background(
+        self,
+        sigma: float = 3.0,
+        max_iters: int = 5,
+    ) -> np.ndarray:
+        """
+        Computes the median background flux as a function of time using only
+        background pixels selected via sigma clipping statistics.
+
+        Parameters
+        ----------
+        sigma : float, optional
+            Number of standard deviations for sigma clipping. Default is 3.0.
+        max_iters : int, optional
+            Maximum number of iterations for sigma clipping. Default is 5.
+
+        Returns
+        -------
+        median_bkg : np.ndarray
+            1D array of shape (nt,) with the median background flux for each cadence.
+        """
+        median_bkg = np.zeros(self.nt, dtype=np.float64)
+        bkg_pixel_mask = np.zeros_like(self.flux, dtype=bool)
+
+        for tdx in range(self.nt):
+            flux_frame = self.flux[tdx]
+            if hasattr(self, "pixel_mask") and self.pixel_mask is not None:
+                valid = self.pixel_mask[tdx] & np.isfinite(flux_frame)
+            else:
+                valid = np.isfinite(flux_frame)
+
+            if np.sum(valid) < 3:
+                if np.sum(valid) > 0:
+                    median_bkg[tdx] = float(np.nanmedian(flux_frame[valid]))
+                else:
+                    median_bkg[tdx] = 0.0
+                continue
+
+            clipped = sigma_clip(
+                flux_frame[valid],
+                sigma=sigma,
+                maxiters=max_iters,
+                cenfunc="median",
+                stdfunc="mad_std",
+            )
+            unclipped = ~clipped.mask
+            if np.sum(unclipped) > 0:
+                median_bkg[tdx] = float(np.nanmedian(flux_frame[valid][unclipped]))
+                valid_indices = np.where(valid)[0]
+                bkg_pixel_mask[tdx, valid_indices[unclipped]] = True
+            else:
+                median_bkg[tdx] = float(np.nanmedian(flux_frame[valid]))
+                bkg_pixel_mask[tdx, valid] = True
+
+        self.median_bkg = median_bkg
+        self.bkg_pixel_mask = bkg_pixel_mask
+        return median_bkg
+
     def load_prf_model(
         self,
         input: Optional[str] = None,
@@ -396,9 +564,48 @@ class LCExtractor(Machine):
             return self.plot_prf_model(hires=True, stretch="log")
         return None
 
-    def draw_scene(self, frame_index: int = 0) -> None:
+    def pixel_coordinates(self, frame_index: int = 0) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Convenience function to make the scene model
+        Calculates pixel coordinates of sources for a given cadence.
+        Supports both classic FITS WCS and APE 14 WCS (such as SlicedLowLevelWCS,
+        HighLevelWCSWrapper, or GWCS).
+
+        Parameters
+        ----------
+        frame_index : int
+            Time index.
+
+        Returns
+        -------
+        row, col : np.ndarray
+            Row and column pixel coordinates of the sources in the catalog.
+        """
+        if self.WCSs is None:
+            raise ValueError("WCS information is not available")
+        wcs_obj = self.WCSs[frame_index]
+        if hasattr(wcs_obj, "all_world2pix"):
+            ROW, COL = wcs_obj.all_world2pix(self.sources.loc[:, ["ra", "dec"]].values, 0.0).T
+            return ROW, COL
+        elif hasattr(wcs_obj, "_gwcs"):
+            wcs_obj = wcs_obj._gwcs
+
+        # APE 14 world_to_pixel interface
+        coords = SkyCoord(
+            ra=self.sources["ra"].values * u.deg,
+            dec=self.sources["dec"].values * u.deg,
+            frame="icrs",
+        )
+        col_vals, row_vals = wcs_obj.world_to_pixel(coords)
+        return np.asarray(row_vals), np.asarray(col_vals)
+
+    def draw_scene(
+        self,
+        frame_index: int = 0,
+        offset: Tuple[float, float] = (0.0, 0.0),
+    ) -> None:
+        """
+        Convenient function to make the scene model, optionally applying sub-pixel
+        pointing offsets (offset_row, offset_col) in cutout pixel coordinates.
         """
         # check of prf interpolation model exist
         if not hasattr(self, "prf_model"):
@@ -413,21 +620,26 @@ class LCExtractor(Machine):
         # get source pixel locs for current frame
         srow, scol = self.pixel_coordinates(frame_index=frame_index)
 
-        # evaluate PRF at each source position
+        # Ensure source positions are in cutout pixel coordinates
+        if np.nanmean(srow) >= row.min():
+            srow_cutout = srow - row.min()
+            scol_cutout = scol - col.min()
+        else:
+            srow_cutout = srow
+            scol_cutout = scol
+
+        # evaluate PRF at each source position with offset applied
+        off_r, off_c = offset
         scene_model = []
         for sdx in range(self.nsources):
             eval = self.prf_model.evaluate_from_position(
-                center=(srow[sdx], scol[sdx]),
-                corner=(row.min(), col.min()),
+                center=(srow_cutout[sdx] + off_r, scol_cutout[sdx] + off_c),
+                corner=(0, 0),
                 shape=self.image_shape,
             )[-1]
+            eval = np.nan_to_num(eval, nan=0.0)
             scene_model.append(eval.ravel())
         self.scene_model = np.array(scene_model)
-        # we assume the at least one source will be fully in the cutout, so we 
-        # normalize the model to that sum
-        self.scene_model /= self.scene_model.sum(axis=1).max()
-        # then scale by PRF normalization factor
-        self.scene_model *= self.prf_model.prf_sum
         return
 
     def plot_prf_model(
@@ -538,28 +750,63 @@ class LCExtractor(Machine):
         ax: Optional[matplotlib.axes.Axes] = None,
         sources: bool = False,
         frame_index: int = 0,
+        coords: str = "sky",
+        grid: Optional[bool] = None,
     ) -> matplotlib.axes.Axes:
         """
-        Function to plot the Full Frame Image and Gaia sources.
+        Function to plot the image cutout in sky coordinates (with WCS projection)
+        or in pixel space, optionally with Gaia sources.
 
         Parameters
         ----------
-        ax : matplotlib.axes
-            Matlotlib axis can be provided, if not one will be created and returned.
-        sources : boolean
-            Whether to overplot or not the source catalog.
-        frame_index : int
-            Time index used to plot the image data.
+        data : str, optional
+            Data plane to plot, "image" or "scene". Default is "image".
+        ax : matplotlib.axes.Axes, optional
+            Matplotlib axis can be provided. If not, one will be created and returned.
+        sources : boolean, optional
+            Whether to overplot or not the source catalog. Default is False.
+        frame_index : int, optional
+            Time index used to plot the image data. Default is 0.
+        coords : str, optional
+            Coordinate space for plotting: "sky" (with WCS celestial projection) or "pixel".
+            Default is "sky".
+        grid : bool, optional
+            Whether to display the coordinate grid. If None, defaults to True for "sky"
+            and False for "pixel".
 
         Returns
         -------
-        ax : matplotlib.axes
-            Matlotlib axis with the figure.
+        ax : matplotlib.axes.Axes
+            Matplotlib axis with the figure.
         """
+        coords = coords.lower()
+        if coords not in ("sky", "pixel"):
+            raise ValueError(f"Unknown coords '{coords}'. Options are 'sky' or 'pixel'.")
+
+        if grid is None:
+            grid = True if coords == "sky" else False
+
+        wcs_obj = None
+        if coords == "sky" and self.WCSs is not None:
+            wcs_obj = self.WCSs[frame_index]
+            if hasattr(wcs_obj, "_gwcs"):
+                wcs_obj = wcs_obj._gwcs
+            elif hasattr(wcs_obj, "wcs") and not hasattr(wcs_obj, "pixel_to_world"):
+                wcs_obj = wcs_obj.wcs
+
+            # Wrap low-level WCS to ensure longitudes are mapped to [0, 360) during WCSAxes gridline inversion
+            if hasattr(wcs_obj, "low_level_wcs"):
+                safe_low = _SafeWCSWrapper(wcs_obj.low_level_wcs)
+                wcs_obj = HighLevelWCSWrapper(safe_low)
+            elif hasattr(wcs_obj, "world_to_pixel_values"):
+                wcs_obj = HighLevelWCSWrapper(_SafeWCSWrapper(wcs_obj))
+
         if ax is None:
             _ = plt.figure(figsize=(10, 10))
-            # ax = plt.subplot(projection=self.WCSs[frame_index], label="overlays")
-            ax = plt.subplot()
+            if coords == "sky" and wcs_obj is not None:
+                ax = plt.subplot(projection=wcs_obj)
+            else:
+                ax = plt.subplot()
 
         if data == "image":
             to_plot = self.flux_3d[frame_index]
@@ -571,12 +818,23 @@ class LCExtractor(Machine):
             )
             title = "Scene Model"
         else:
-            raise ValueError
+            raise ValueError(f"Unknown data '{data}'. Options are 'image' or 'scene'.")
         norm = simple_norm(to_plot.ravel(), "asinh", percent=99)
 
+        if coords == "sky":
+            ny, nx = to_plot.shape
+            row_grid, col_grid = np.meshgrid(
+                np.arange(ny),
+                np.arange(nx),
+                indexing="ij",
+            )
+        else:
+            col_grid = self.column_3d[frame_index]
+            row_grid = self.row_3d[frame_index]
+
         bar = ax.pcolormesh(
-            self.ra_3d[frame_index],
-            self.dec_3d[frame_index],
+            col_grid,
+            row_grid,
             to_plot,
             norm=norm,
             cmap=plt.cm.viridis,
@@ -584,25 +842,42 @@ class LCExtractor(Machine):
         )
         ax.set_aspect("equal", adjustable="box")
         plt.colorbar(bar, ax=ax, shrink=0.7, label=r"Flux [DN/s]")
-        ax.grid(True, which="major", axis="both", ls="-", color="w", alpha=0.7)
-        ax.set_xlabel("R.A. [deg]")
-        ax.set_ylabel("Decl. [deg]")
-        ax.set_xlim(self.column_3d.min() - 3, self.column_3d.max() + 3)
-        ax.set_ylim(self.row_3d.min() - 3, self.row_3d.max() + 3)
+
+        if coords == "sky" and hasattr(ax, "coords"):
+            if grid:
+                try:
+                    ax.coords.grid(True, color="w", ls="-", alpha=0.7)
+                except Exception:
+                    ax.grid(True, which="major", axis="both", ls="-", color="w", alpha=0.7)
+            try:
+                ax.coords[0].set_axislabel("Right Ascension")
+                ax.coords[1].set_axislabel("Declination")
+            except Exception:
+                pass
+        else:
+            if grid:
+                ax.grid(True, which="major", axis="both", ls="-", color="w", alpha=0.7)
+            else:
+                ax.grid(False)
+            ax.set_xlabel("Column [pixel]")
+            ax.set_ylabel("Row [pixel]")
 
         ax.set_title(
-            f"Roman | {self.meta['SCA']} | {self.meta['FILTER']}\n"  # type: ignore
+            f"Roman | SCA {self.meta['SCA']} | {self.meta['FILTER']}\n"  # type: ignore
             f"Frame {self.cadenceno[frame_index]} | JD {self.time[frame_index]} \n"  # type: ignore
             f"{title}"
         )
 
         if sources:
             srow, scol = self.pixel_coordinates(frame_index=frame_index)
+            if coords == "pixel":
+                srow = srow + self.row[frame_index].min()
+                scol = scol + self.column[frame_index].min()
             # marker size correlates with source magnitude
-            size = self.sources.loc[:, self.meta["FILTER"]].to_numpy(dtype=float)  # type: ignore
+            size = self.sources.loc[:, self.sources_mag_column].to_numpy(dtype=float)  # type: ignore
             size = np.clip(size, 15.0, 23.0)
             size = (23 - size) / (23 - 15)
-            size = 5 + (50 - 5) * size
+            size = 10 + (50 - 10) * size
             ax.scatter(
                 scol,
                 srow,
@@ -665,28 +940,57 @@ class LCExtractor(Machine):
 
     def get_lightcurves(self, mode: str = "lk") -> dict:
         """
-        Bundle light curves as `lightkurve` objects is `mode=="lk"`
+        Bundle light curves as `lightkurve` objects if `mode=="lk"`
         or as a DataFrame if `mode=="table"'.
 
         Parameters
         ----------
         mode : str
-            What type of light curve wil be created
+            What type of light curve will be created
         """
         if not hasattr(self, "lcs"):
             raise AttributeError("No light curve has been extracted yet, run `self.fit_prf_photometry` first")
         if mode == "lk":
             lcs = {}
             for idx, val in self.lcs.items():
-                psf_lc = {f"psf_{k}": val for k, val in val["psf"].items()}
-                del psf_lc["psf_time"]
-                ap_meta_cols = ['flfrcsap', 'crowdsap', 'centroid_x', 'centroid_y', 'quality']
-                ape_meta = {f"ap_{k}": val for k, val in val["aperture"].items() if k in ap_meta_cols}
+                psf_lc = {f"psf_{k}": v for k, v in val["psf"].items()}
+                if "psf_time" in psf_lc:
+                    del psf_lc["psf_time"]
+
+                ap_data = val.get("aperture_snr", val.get("aperture_iso", None))
+                if ap_data is not None:
+                    ap_meta_cols = [
+                        'flfrcsap',
+                        'crowdsap',
+                        'centroid_x',
+                        'centroid_y',
+                        'bkg_flux',
+                        'bkg_flux_err',
+                        'flux_corr',
+                        'flux_err_corr',
+                        'quality',
+                    ]
+                    extra_cols = {f"ap_{k}": v for k, v in ap_data.items() if k in ap_meta_cols}
+                    # Also include any circular apertures in data
+                    for ap_name, ap_dict in val.items():
+                        if ap_name.startswith("aperture_") and ap_name not in ("aperture_snr", "aperture_iso"):
+                            for k, v in ap_dict.items():
+                                if k not in ("time", "aperture_mask"):
+                                    extra_cols[f"{ap_name}_{k}"] = v
+                    time = ap_data["time"] * u.d
+                    flux = ap_data["flux"] * u.electron / u.second
+                    flux_err = ap_data["flux_err"] * u.electron / u.second
+                else:
+                    extra_cols = {}
+                    time = val["psf"]["time"] * u.d
+                    flux = val["psf"]["flux"] * u.electron / u.second
+                    flux_err = val["psf"]["flux_err"] * u.electron / u.second
+
                 lc = lk.LightCurve(
-                    time=val["aperture"]["time"] * u.d,
-                    flux=val["aperture"]["flux"] * u.electron / u.second,
-                    flux_err=val["aperture"]["flux_err"] * u.electron / u.second,
-                    data=ape_meta | psf_lc,
+                    time=time,
+                    flux=flux,
+                    flux_err=flux_err,
+                    data=extra_cols | psf_lc,
                 )
                 lcs[idx] = lc
 
@@ -696,12 +1000,106 @@ class LCExtractor(Machine):
         else:
             raise ValueError(f"Unsupported mode: {mode!r}")
 
+    def to_fits(
+        self,
+        target: Optional[Union[int, str]] = None,
+        path: Optional[str] = None,
+        overwrite: bool = True,
+        extra_meta: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> Union[fits.HDUList, Dict[Union[int, str], fits.HDUList]]:
+        """
+        Saves target light curve(s) to a standardized FITS file using `roman_lcs.io`.
+
+        Parameters
+        ----------
+        target : int or str, optional
+            Target index to save. If None, saves all extracted targets (or writes
+            multiple files if path contains a formatting placeholder).
+        path : str, optional
+            Path where the FITS file will be written.
+        overwrite : bool, optional
+            Whether to overwrite existing files. Default is True.
+        extra_meta : dict, optional
+            Additional metadata cards to include in PRIMARY header.
+        **kwargs : Any
+            Additional metadata keyword arguments for PRIMARY header.
+
+        Returns
+        -------
+        hdul : astropy.io.fits.HDUList or dict of HDULists
+        """
+        if not hasattr(self, "lcs") or len(self.lcs) == 0:
+            raise AttributeError("No light curves extracted yet. Run `fit_prf_photometry` first.")
+
+        from .io import write_lightcurve_fits
+
+        # Build metadata from self.meta and extractor attributes
+        base_meta = dict(self.meta) if hasattr(self, "meta") and self.meta else {}
+        if extra_meta is not None:
+            base_meta.update(extra_meta)
+        base_meta.update(kwargs)
+        if hasattr(self, "cutout_size"):
+            base_meta["CUTSIZE"] = self.cutout_size
+        elif hasattr(self, "image_shape"):
+            base_meta["CUTSIZE"] = self.image_shape[0]
+
+        if target is None:
+            if len(self.lcs) == 1:
+                target = list(self.lcs.keys())[0]
+            else:
+                out = {}
+                for t in self.lcs.keys():
+                    t_meta = dict(base_meta)
+                    if hasattr(self, "sources") and t in self.sources.index:
+                        if "roman_source_id" in self.sources.columns:
+                            t_meta["TARGETID"] = self.sources.loc[t, "roman_source_id"]
+                        elif "TARGETID" not in t_meta:
+                            t_meta["TARGETID"] = t
+                        if "ra" in self.sources.columns:
+                            t_meta["RA_OBJ"] = self.sources.loc[t, "ra"]
+                        if "dec" in self.sources.columns:
+                            t_meta["DEC_OBJ"] = self.sources.loc[t, "dec"]
+                    p = path.format(target=t) if path and "{target}" in path else path
+                    out[t] = write_lightcurve_fits(
+                        self.lcs[t],
+                        output_path=p,
+                        meta=t_meta,
+                        cadenceno=self.cadenceno if hasattr(self, "cadenceno") else None,
+                        overwrite=overwrite,
+                    )
+                return out
+
+        target_lcs = self.lcs[target]
+        if hasattr(self, "sources") and target in self.sources.index:
+            if "roman_source_id" in self.sources.columns:
+                base_meta["TARGETID"] = self.sources.loc[target, "roman_source_id"]
+            elif "TARGETID" not in base_meta:
+                base_meta["TARGETID"] = target
+            if "ra" in self.sources.columns:
+                base_meta["RA_OBJ"] = self.sources.loc[target, "ra"]
+            if "dec" in self.sources.columns:
+                base_meta["DEC_OBJ"] = self.sources.loc[target, "dec"]
+
+        return write_lightcurve_fits(
+            target_lcs,
+            output_path=path,
+            meta=base_meta,
+            cadenceno=self.cadenceno if hasattr(self, "cadenceno") else None,
+            overwrite=overwrite,
+        )
+
     def fit_prf_photometry(
         self,
         targets: List[int] = [],
         model_bkg: bool = True,
         bkg_nknots: int = 3,
+        bkg_sigma: float = 3.0,
         do_aperture: bool = True,
+        aperture_radius: Union[float, int, Sequence[Union[float, int]]] = 3,
+        fit_offsets: bool = False,
+        offset_max_iter: int = 5,
+        offset_threshold: float = 0.01,
     ) -> None:
         """
         Fits PRF photometry the given targets in the image accounting for backgronund
@@ -710,39 +1108,114 @@ class LCExtractor(Machine):
         Parameters
         ----------
         targets : list of int, optional
-            List of target names to fit PRF photometry for. If None, all sources in
+            List of target names to fit PRF photometry for. If None or empty, all sources in
+            the image will be used.
+        model_bkg : bool, optional
+            Whether to model the background signal. Default is True.
+        bkg_nknots : int, optional
+            Number of spline knots for background modeling. Default is 3.
+        bkg_sigma : float, optional
+            Sigma clipping threshold for computing the median background. Default is 3.0.
+        do_aperture : bool, optional
+            Whether to compute aperture photometry. Default is True.
+        aperture_radius : float, int, or sequence of numbers, optional
+            Radius or list of radii for circular aperture photometry in pixels.
+            Default is 3.
+        fit_offsets : bool, optional
+            Whether to iteratively fit sub-pixel centroid offsets (drow, dcol) using
+            scene model spatial gradients. Default is False.
+        offset_max_iter : int, optional
+            Maximum number of Gauss-Newton iterations for offset fitting. Default is 5.
+        offset_threshold : float, optional
+            Convergence threshold in pixels for incremental sub-pixel shifts.
+            Default is 0.01 pix (~1.1 mas for Roman WFI).
         """
-        n_targets = len(targets) if len(targets) > 0 else len(self.sources)
+        if targets is None or len(targets) == 0:
+            targets = list(range(len(self.sources)))
+        n_targets = len(targets)
+
+        if isinstance(aperture_radius, (int, float, np.integer, np.floating)):
+            radii = [aperture_radius]
+        elif isinstance(aperture_radius, (list, tuple, np.ndarray)):
+            radii = list(aperture_radius)
+        else:
+            raise TypeError(
+                f"`aperture_radius` must be a float, int, or list of numbers, got {type(aperture_radius)}"
+            )
+
         targets_prf_flux = np.zeros((self.nt, n_targets))
         targets_prf_flux_err = np.zeros((self.nt, n_targets))
         model_chi2 = np.zeros(self.nt)
         scene_model = np.zeros_like(self.flux)
-        bkg_model = np.zeros_like(self.flux)
         psf_quality = np.zeros(self.nt)
 
+        self.prf_drow = np.zeros(self.nt, dtype=np.float64)
+        self.prf_dcol = np.zeros(self.nt, dtype=np.float64)
+        self.prf_fit_flags = np.zeros(self.nt, dtype=np.int32)
+        targets_nominal_row = np.zeros((self.nt, n_targets), dtype=np.float64)
+        targets_nominal_col = np.zeros((self.nt, n_targets), dtype=np.float64)
+
         if model_bkg:
+            median_bkg = self._compute_median_background(sigma=bkg_sigma)
             bkg_terms = _make_A_cartesian(
                 x=self.dcolumn[targets[0] if len(targets) > 0 else 0].ravel(), # type: ignore
                 y=self.drow[targets[0] if len(targets) > 0 else 0].ravel(), # type: ignore
                 n_knots=bkg_nknots,
             ).T
+            n_bkg_terms = bkg_terms.shape[0]
+            self.bkg_flux = np.zeros_like(self.flux)
+            self.bkg_flux_err = np.zeros_like(self.flux)
+        else:
+            median_bkg = np.zeros(self.nt, dtype=np.float64)
+            self.bkg_flux = None
+            self.bkg_flux_err = None
+
+        has_bkg_components = model_bkg or (len(targets) > 0 and len(self.sources) > len(targets))
+        if has_bkg_components:
+            self.bkg_model = np.zeros_like(self.flux)
+            self.bkg_model_err = np.zeros_like(self.flux)
+        else:
+            self.bkg_model = None
+            self.bkg_model_err = None
 
         if do_aperture:
-            targets_ap_flux = np.zeros((self.nt, len(targets)))
-            targets_ap_flux_err = np.zeros((self.nt, len(targets)))
-            aperture_metrics = np.zeros((self.nt, len(targets), 2))
-            targets_centroid = np.zeros((self.nt, len(targets), 2))
-            targets_ap_quality = np.zeros((self.nt, len(targets)))
-            aperture_masks = []
+            snr_ap_flux = np.zeros((self.nt, n_targets))
+            snr_ap_flux_err = np.zeros((self.nt, n_targets))
+            snr_ap_metrics = np.zeros((self.nt, n_targets, 2))
+            snr_centroid = np.zeros((self.nt, n_targets, 2))
+            snr_bkg_flux = np.zeros((self.nt, n_targets))
+            snr_bkg_flux_err = np.zeros((self.nt, n_targets))
+            snr_ap_quality = np.zeros((self.nt, n_targets))
+            snr_masks = []
 
-        # prior_mu = self.source_flux_estimates
-        # prior_sigma = (
-        #     np.ones(self.mean_model.shape[0])
-        #     * 5
-        #     * np.abs(self.source_flux_estimates) ** 0.5
-        # )
+            iso_ap_flux = np.zeros((self.nt, n_targets))
+            iso_ap_flux_err = np.zeros((self.nt, n_targets))
+            iso_ap_metrics = np.zeros((self.nt, n_targets, 2))
+            iso_centroid = np.zeros((self.nt, n_targets, 2))
+            iso_bkg_flux = np.zeros((self.nt, n_targets))
+            iso_bkg_flux_err = np.zeros((self.nt, n_targets))
+            iso_ap_quality = np.zeros((self.nt, n_targets))
+            iso_masks = []
+
+            circ_data = {}
+            for r in radii:
+                r_key = _format_aperture_key(r)
+                circ_data[r_key] = {
+                    "radius": float(r),
+                    "flux": np.zeros((self.nt, n_targets)),
+                    "flux_err": np.zeros((self.nt, n_targets)),
+                    "metrics": np.zeros((self.nt, n_targets, 2)),
+                    "centroid": np.zeros((self.nt, n_targets, 2)),
+                    "bkg_flux": np.zeros((self.nt, n_targets)),
+                    "bkg_flux_err": np.zeros((self.nt, n_targets)),
+                    "quality": np.zeros((self.nt, n_targets)),
+                    "masks": [],
+                }
+
         self.draw_scene(frame_index=0)
         self._compute_aperture_cut()
+        if do_aperture:
+            self._compute_snr_optimal_pixel_count()
 
         for tdx in tqdm(
             range(self.nt),
@@ -750,54 +1223,202 @@ class LCExtractor(Machine):
             total=self.nt,
             disable=self.quiet,
         ):
-            # update scene model due to pixel grid offsets
-            self.draw_scene(frame_index=tdx)
+            # Record nominal positions of targets for this frame in original image pixel grid
+            srow_nom, scol_nom = self.pixel_coordinates(frame_index=tdx)
+            corner_row = self.row[tdx].min()
+            corner_col = self.column[tdx].min()
+            if np.nanmean(srow_nom) < corner_row:
+                row_orig = srow_nom + corner_row
+                col_orig = scol_nom + corner_col
+            else:
+                row_orig = srow_nom
+                col_orig = scol_nom
+            targets_nominal_row[tdx, :] = row_orig[targets]
+            targets_nominal_col[tdx, :] = col_orig[targets]
+
+            epoch_flag = PRFFitFlag.SUCCESS
+            if np.sum(self.pixel_mask[tdx]) < 10:
+                epoch_flag |= PRFFitFlag.INSUFFICIENT_UNMASKED_PIXELS
+
+            drow_acc = 0.0
+            dcol_acc = 0.0
+
+            if fit_offsets:
+                converged = False
+                last_w = None
+                for it in range(offset_max_iter):
+                    self.draw_scene(frame_index=tdx, offset=(drow_acc, dcol_acc))
+                    mean_model = sparse.csr_matrix(self.scene_model)
+                    if len(targets) > 0:
+                        targets_models = mean_model[targets]
+                        bkg_star_indices = ~np.isin(self.sources.index.values, targets)
+                        if bkg_star_indices.any():
+                            bkg_star_model = mean_model[bkg_star_indices]
+                            bkg_star_flux = np.delete(self.source_flux_estimates, targets)
+                            bkg_star_scene = bkg_star_model.T.dot(bkg_star_flux)[None, :]
+                            stellar_models = sparse.vstack([targets_models, sparse.csr_matrix(bkg_star_scene)]).tocsr()
+                        else:
+                            stellar_models = targets_models
+                    else:
+                        stellar_models = mean_model
+
+                    # Get current estimate of stellar fluxes
+                    if last_w is None:
+                        init_m = stellar_models
+                        if model_bkg:
+                            init_m = sparse.vstack([init_m, bkg_terms]).tocsr()
+                        try:
+                            w_init = solve_linear_model(
+                                init_m.T,
+                                y=self.flux[tdx] - median_bkg[tdx],
+                                y_err=self.flux_err[tdx],
+                                errors=False,
+                                k=self.pixel_mask[tdx],
+                            )
+                            w_stellar = w_init[:stellar_models.shape[0]]
+                        except Exception:
+                            w_stellar = np.array([self.source_flux_estimates[t] for t in targets])
+                            if len(targets) > 0 and bkg_star_indices.any():
+                                w_stellar = np.append(w_stellar, 1.0)
+                    else:
+                        w_stellar = last_w[:stellar_models.shape[0]]
+
+                    stellar_scene_1d = stellar_models.T.dot(w_stellar).ravel()
+                    stellar_scene_2d = stellar_scene_1d.reshape(self.image_shape)
+                    dM_dr, dM_dc = np.gradient(stellar_scene_2d)
+                    G_row = -dM_dr.ravel()
+                    G_col = -dM_dc.ravel()
+
+                    grad_models = sparse.csr_matrix(np.vstack([G_row, G_col]))
+                    iter_model = sparse.vstack([stellar_models, grad_models]).tocsr()
+                    idx_Grow = stellar_models.shape[0]
+                    idx_Gcol = idx_Grow + 1
+                    if model_bkg:
+                        iter_model = sparse.vstack([iter_model, bkg_terms]).tocsr()
+
+                    try:
+                        w, werr = solve_linear_model(
+                            iter_model.T,
+                            y=self.flux[tdx] - median_bkg[tdx],
+                            y_err=self.flux_err[tdx],
+                            errors=True,
+                            k=self.pixel_mask[tdx],
+                        )
+                        if not np.all(np.isfinite(w)):
+                            epoch_flag |= PRFFitFlag.NON_FINITE_WEIGHTS
+                            break
+                    except np.linalg.LinAlgError as e:
+                        log.error(f"Error solving linear model with offsets: {e}")
+                        epoch_flag |= PRFFitFlag.LINALG_FAILED
+                        break
+
+                    delta_r = float(w[idx_Grow])
+                    delta_c = float(w[idx_Gcol])
+
+                    if max(abs(delta_r), abs(delta_c)) > 1.5 or max(abs(drow_acc + delta_r), abs(dcol_acc + delta_c)) > 2.0:
+                        epoch_flag |= PRFFitFlag.DIVERGED_OFFSET
+
+                    step_r = np.clip(delta_r, -0.5, 0.5)
+                    step_c = np.clip(delta_c, -0.5, 0.5)
+                    drow_acc += step_r
+                    dcol_acc += step_c
+
+                    last_w = w
+                    last_werr = werr
+
+                    if max(abs(delta_r), abs(delta_c)) < offset_threshold:
+                        converged = True
+                        break
+
+                if not converged:
+                    epoch_flag |= PRFFitFlag.NOT_CONVERGED
+                    if it == offset_max_iter - 1:
+                        epoch_flag |= PRFFitFlag.MAX_ITER_REACHED
+
+                # Draw scene at final converged offset
+                self.draw_scene(frame_index=tdx, offset=(drow_acc, dcol_acc))
+            else:
+                # update scene model due to pixel grid offsets
+                self.draw_scene(frame_index=tdx)
+
             mean_model = sparse.csr_matrix(self.scene_model)
             if len(targets) > 0:
                 targets_models = mean_model[targets]
                 # get background stars PSF model
-                bkg_star_model = mean_model[
-                    ~np.isin(self.sources.index.values, targets)
-                ]
-                bkg_star_flux = np.delete(self.source_flux_estimates, targets)
-                # compute background star scene
-                bkg_star_model = bkg_star_model.T.dot(bkg_star_flux)[None, :]
-                bkg_star_model = sparse.csr_matrix(bkg_star_model)
-                # stack linear model with target, bkg stars and bkg signal
-                model = sparse.vstack([targets_models, bkg_star_model]).tocsr()
-                # prior_mu = np.append(self.source_flux_estimates[targets], [1])
-                # prior_sigma = np.ones(prior_mu.shape[0]) * 5 * np.abs(prior_mu) ** 0.5
+                bkg_star_indices = ~np.isin(self.sources.index.values, targets)
+                if bkg_star_indices.any():
+                    bkg_star_model = mean_model[bkg_star_indices]
+                    bkg_star_flux = np.delete(self.source_flux_estimates, targets)
+                    # compute background star scene
+                    bkg_star_model = bkg_star_model.T.dot(bkg_star_flux)[None, :]
+                    bkg_star_model = sparse.csr_matrix(bkg_star_model)
+                    # stack linear model with target, bkg stars and bkg signal
+                    model = sparse.vstack([targets_models, bkg_star_model]).tocsr()
+                else:
+                    model = targets_models
             else:
                 model = mean_model
             if model_bkg:
                 model = sparse.vstack([model, bkg_terms]).tocsr()
-                # prior_mu = np.concatenate([prior_mu, np.zeros(bkg_terms.shape[0])])
-                # prior_sigma = np.concatenate([prior_mu[:len(targets)+1], np.zeros(bkg_terms.shape[0])])
-            # solve linear model with current flux
+
+            # solve linear model with current flux (with median background subtracted)
             try:
                 w, werr = solve_linear_model(
-                    # sparse.csr_matrix(model.T),
                     model.T,
-                    y=self.flux[tdx],
+                    y=self.flux[tdx] - median_bkg[tdx],
                     y_err=self.flux_err[tdx],
                     errors=True,
                     k=self.pixel_mask[tdx],
-                    # prior_mu=prior_mu,
-                    # prior_sigma=prior_sigma,
                 )
+                if not np.all(np.isfinite(w)):
+                    epoch_flag |= PRFFitFlag.NON_FINITE_WEIGHTS
+                targets_prf_flux[tdx, :] = w[:n_targets]
+                targets_prf_flux_err[tdx, :] = werr[:n_targets]
+                scene_model[tdx] = model.T.dot(w).ravel() + median_bkg[tdx]
+                if model_bkg:
+                    w_bkg = w[-n_bkg_terms:]
+                    werr_bkg = werr[-n_bkg_terms:]
+                    # Strictly evaluate bkg_terms basis (excluding background stars):
+                    bkg_f = bkg_terms.T.dot(w_bkg).ravel()
+                    bkg_var = (bkg_terms.power(2)).T.dot(werr_bkg**2).ravel()
+                    total_bkg_f = bkg_f + median_bkg[tdx]
+                    poisson_var = np.clip(total_bkg_f, 0, None)
+                    bkg_var = np.where(
+                        np.isfinite(bkg_var) & (bkg_var >= 0), bkg_var, poisson_var
+                    )
+                    bkg_err = np.sqrt(bkg_var)
+
+                    self.bkg_flux[tdx] = total_bkg_f
+                    self.bkg_flux_err[tdx] = bkg_err
+
+                if self.bkg_model is not None and model.shape[0] > n_targets:
+                    # Account for diffuse background signal plus background stars (everything but targets)
+                    non_target_model = model[n_targets:]
+                    w_non_target = w[n_targets:]
+                    werr_non_target = werr[n_targets:]
+                    bkg_mod_f = non_target_model.T.dot(w_non_target).ravel()
+                    total_bkg_mod_f = bkg_mod_f + median_bkg[tdx]
+                    bkg_mod_var = (non_target_model.power(2)).T.dot(werr_non_target**2).ravel()
+                    poisson_mod_var = np.clip(total_bkg_mod_f, 0, None)
+                    bkg_mod_var = np.where(
+                        np.isfinite(bkg_mod_var) & (bkg_mod_var >= 0),
+                        bkg_mod_var,
+                        poisson_mod_var,
+                    )
+                    bkg_mod_err = np.sqrt(bkg_mod_var)
+
+                    self.bkg_model[tdx] = total_bkg_mod_f
+                    self.bkg_model_err[tdx] = bkg_mod_err
             except np.linalg.LinAlgError as e:
                 log.error(f"Error solving linear model: {e}")
-                log.error("Skipping this cadence.")
+                log.error("Skipping PRF fit for this cadence.")
+                epoch_flag |= PRFFitFlag.LINALG_FAILED
                 targets_prf_flux[tdx, :] = -1e6
                 targets_prf_flux_err[tdx, :] = -1e6
-                continue
-            # assign flux phot values to targets
-            targets_prf_flux[tdx, :] = w[:n_targets]
-            targets_prf_flux_err[tdx, :] = werr[:n_targets]
-            # build full scene model
-            scene_model[tdx] = model.T.dot(w).ravel()
-            if model_bkg:
-                bkg_model[tdx] = model[n_targets:].T.dot(w[n_targets:]).ravel()
+
+            # Check for negative flux in targets
+            if np.any(targets_prf_flux[tdx, :] < 0):
+                epoch_flag |= PRFFitFlag.NEGATIVE_FLUX
 
             # reduced chi2
             if tdx == 0:
@@ -805,126 +1426,445 @@ class LCExtractor(Machine):
             model_chi2[tdx] = ((self.flux[tdx] - scene_model[tdx]) ** 2).sum() / (
                 np.prod(self.image_shape) - model_rank
             )
+            if model_chi2[tdx] > 10.0:
+                epoch_flag |= PRFFitFlag.HIGH_CHI2
 
             # quality mask with sat and bad pixels
-
             psf_quality[tdx] = (~self.pixel_mask[tdx]).sum()
+
+            self.prf_drow[tdx] = drow_acc
+            self.prf_dcol[tdx] = dcol_acc
+            self.prf_fit_flags[tdx] = epoch_flag
 
             # do aperture photometry for targets
             if do_aperture:
-                ap_flux, aperture_mask = self._single_frame_aperture_photometry(
-                    frame_index=tdx, targets=targets
+                # 1. SNR optimal aperture (default)
+                ap_flux, snr_mask = self._single_frame_aperture_photometry(
+                    frame_index=tdx,
+                    targets=targets,
+                    aperture_type="snr",
                 )
-                targets_ap_flux[tdx] = ap_flux[:, 0]
-                targets_ap_flux_err[tdx] = ap_flux[:, 1]
-                aperture_metrics[tdx] = ap_flux[:, 2:4]
-                targets_centroid[tdx] = ap_flux[:, 4:6]
-                targets_ap_quality[tdx] = ap_flux[:, 6]
-                aperture_masks.append(aperture_mask)
+                snr_ap_flux[tdx] = ap_flux[:, 0]
+                snr_ap_flux_err[tdx] = ap_flux[:, 1]
+                snr_ap_metrics[tdx] = ap_flux[:, 2:4]
+                snr_centroid[tdx] = ap_flux[:, 4:6]
+                snr_bkg_flux[tdx] = ap_flux[:, 6]
+                snr_bkg_flux_err[tdx] = ap_flux[:, 7]
+                snr_ap_quality[tdx] = ap_flux[:, 8]
+                snr_masks.append(snr_mask)
+
+                # 2. Isophote aperture (uses self.prf_cut)
+                iso_flux, iso_mask = self._single_frame_aperture_photometry(
+                    frame_index=tdx,
+                    targets=targets,
+                    aperture_type="iso",
+                )
+                iso_ap_flux[tdx] = iso_flux[:, 0]
+                iso_ap_flux_err[tdx] = iso_flux[:, 1]
+                iso_ap_metrics[tdx] = iso_flux[:, 2:4]
+                iso_centroid[tdx] = iso_flux[:, 4:6]
+                iso_bkg_flux[tdx] = iso_flux[:, 6]
+                iso_bkg_flux_err[tdx] = iso_flux[:, 7]
+                iso_ap_quality[tdx] = iso_flux[:, 8]
+                iso_masks.append(iso_mask)
+
+                # 3. Circular apertures
+                for r_key, cdict in circ_data.items():
+                    c_flux, c_mask = self._single_frame_aperture_photometry(
+                        frame_index=tdx,
+                        targets=targets,
+                        aperture_type="circular",
+                        radius=cdict["radius"],
+                    )
+                    cdict["flux"][tdx] = c_flux[:, 0]
+                    cdict["flux_err"][tdx] = c_flux[:, 1]
+                    cdict["metrics"][tdx] = c_flux[:, 2:4]
+                    cdict["centroid"][tdx] = c_flux[:, 4:6]
+                    cdict["bkg_flux"][tdx] = c_flux[:, 6]
+                    cdict["bkg_flux_err"][tdx] = c_flux[:, 7]
+                    cdict["quality"][tdx] = c_flux[:, 8]
+                    cdict["masks"].append(c_mask)
 
         self.scene_model_cube = scene_model
-        self.bkg_model = bkg_model
 
         if not hasattr(self, "lcs"):
             self.lcs = {}
         for sdx, snum in enumerate(targets):
-            self.lcs[snum] = {}
+            if snum not in self.lcs:
+                self.lcs[snum] = {}
             self.lcs[snum]["psf"] = {
                 "time": self.time,
                 "flux": targets_prf_flux[:, sdx],
                 "flux_err": targets_prf_flux_err[:, sdx],
                 "chi2": model_chi2,
                 "quality": psf_quality,
+                "drow": self.prf_drow,
+                "dcol": self.prf_dcol,
+                "row": targets_nominal_row[:, sdx],
+                "column": targets_nominal_col[:, sdx],
+                "fit_flag": self.prf_fit_flags,
             }
 
         if do_aperture:
-            aperture_masks = np.array(aperture_masks)
+            snr_masks_arr = np.array(snr_masks)
+            iso_masks_arr = np.array(iso_masks)
+            self.aperture_masks = snr_masks_arr
             for sdx, snum in enumerate(targets):
-                self.lcs[snum]["aperture"] = {
+                snr_flux_corr, snr_flux_err_corr = correct_aperture_flux(
+                    flux=snr_ap_flux[:, sdx],
+                    flux_err=snr_ap_flux_err[:, sdx],
+                    flfrcsap=snr_ap_metrics[:, sdx, 0],
+                    crowdsap=snr_ap_metrics[:, sdx, 1],
+                )
+                snr_dict = {
                     "time": self.time,
-                    "flux": targets_ap_flux[:, sdx],
-                    "flux_err": targets_ap_flux_err[:, sdx],
-                    "flfrcsap": aperture_metrics[:, sdx, 0],
-                    "crowdsap": aperture_metrics[:, sdx, 1],
-                    "centroid_x": targets_centroid[:, sdx, 0],
-                    "centroid_y": targets_centroid[:, sdx, 1],
-                    "aperture_mask": aperture_masks[:, sdx, :],
-                    "quality": targets_ap_quality[:, sdx],
+                    "flux": snr_ap_flux[:, sdx],
+                    "flux_err": snr_ap_flux_err[:, sdx],
+                    "flux_corr": snr_flux_corr,
+                    "flux_err_corr": snr_flux_err_corr,
+                    "flfrcsap": snr_ap_metrics[:, sdx, 0],
+                    "crowdsap": snr_ap_metrics[:, sdx, 1],
+                    "centroid_x": targets_nominal_col[:, sdx] + snr_centroid[:, sdx, 0],
+                    "centroid_y": targets_nominal_row[:, sdx] + snr_centroid[:, sdx, 1],
+                    "bkg_flux": snr_bkg_flux[:, sdx],
+                    "bkg_flux_err": snr_bkg_flux_err[:, sdx],
+                    "aperture_mask": snr_masks_arr[:, sdx, :],
+                    "quality": snr_ap_quality[:, sdx],
                 }
+                iso_flux_corr, iso_flux_err_corr = correct_aperture_flux(
+                    flux=iso_ap_flux[:, sdx],
+                    flux_err=iso_ap_flux_err[:, sdx],
+                    flfrcsap=iso_ap_metrics[:, sdx, 0],
+                    crowdsap=iso_ap_metrics[:, sdx, 1],
+                )
+                iso_dict = {
+                    "time": self.time,
+                    "flux": iso_ap_flux[:, sdx],
+                    "flux_err": iso_ap_flux_err[:, sdx],
+                    "flux_corr": iso_flux_corr,
+                    "flux_err_corr": iso_flux_err_corr,
+                    "flfrcsap": iso_ap_metrics[:, sdx, 0],
+                    "crowdsap": iso_ap_metrics[:, sdx, 1],
+                    "centroid_x": targets_nominal_col[:, sdx] + iso_centroid[:, sdx, 0],
+                    "centroid_y": targets_nominal_row[:, sdx] + iso_centroid[:, sdx, 1],
+                    "bkg_flux": iso_bkg_flux[:, sdx],
+                    "bkg_flux_err": iso_bkg_flux_err[:, sdx],
+                    "aperture_mask": iso_masks_arr[:, sdx, :],
+                    "quality": iso_ap_quality[:, sdx],
+                }
+                self.lcs[snum]["aperture_snr"] = snr_dict
+                self.lcs[snum]["aperture_iso"] = iso_dict
+
+                for r_key, cdict in circ_data.items():
+                    cmasks_arr = np.array(cdict["masks"])
+                    c_flux_corr, c_flux_err_corr = correct_aperture_flux(
+                        flux=cdict["flux"][:, sdx],
+                        flux_err=cdict["flux_err"][:, sdx],
+                        flfrcsap=cdict["metrics"][:, sdx, 0],
+                        crowdsap=cdict["metrics"][:, sdx, 1],
+                    )
+                    self.lcs[snum][r_key] = {
+                        "time": self.time,
+                        "flux": cdict["flux"][:, sdx],
+                        "flux_err": cdict["flux_err"][:, sdx],
+                        "flux_corr": c_flux_corr,
+                        "flux_err_corr": c_flux_err_corr,
+                        "flfrcsap": cdict["metrics"][:, sdx, 0],
+                        "crowdsap": cdict["metrics"][:, sdx, 1],
+                        "centroid_x": targets_nominal_col[:, sdx] + cdict["centroid"][:, sdx, 0],
+                        "centroid_y": targets_nominal_row[:, sdx] + cdict["centroid"][:, sdx, 1],
+                        "bkg_flux": cdict["bkg_flux"][:, sdx],
+                        "bkg_flux_err": cdict["bkg_flux_err"][:, sdx],
+                        "aperture_mask": cmasks_arr[:, sdx, :],
+                        "quality": cdict["quality"][:, sdx],
+                    }
 
         return
-    
+
     def _compute_aperture_cut(self, percentile_cut: Optional[np.ndarray] = None):
         """
-        Computes the cut for aperture photometry based on the percentile of the scene model.
+        Computes the cut for aperture photometry based on the enclosed flux
+        percentile (default 90%) of the PRF scene model.
         """
         if percentile_cut is None:
             percentile_cut = np.array([90] * self.nsources)
-        self.prf_cut = np.array(
-            [
-                np.nanpercentile(obj.data, per)
-                for obj, per in zip(self.scene_model, percentile_cut)
-            ]
-        )
-        return
-        
+        elif isinstance(percentile_cut, (int, float, np.integer, np.floating)):
+            percentile_cut = np.array([percentile_cut] * self.nsources)
 
-    def _single_frame_aperture_photometry(
+        cuts = []
+        for obj, per in zip(self.scene_model, percentile_cut):
+            if hasattr(obj, "toarray"):
+                flat = obj.toarray().ravel()
+            else:
+                flat = np.asarray(obj).ravel()
+            valid = np.isfinite(flat) & (flat > 0)
+            if not np.any(valid):
+                cuts.append(0.0)
+                continue
+            sorted_vals = np.sort(flat[valid])[::-1]
+            cumsum = np.cumsum(sorted_vals)
+            frac = per / 100.0 if per > 1.0 else per
+            target = frac * cumsum[-1]
+            idx = min(np.searchsorted(cumsum, target), len(sorted_vals) - 1)
+            cuts.append(sorted_vals[idx])
+        self.prf_cut = np.array(cuts)
+        return
+
+    def _compute_snr_optimal_pixel_count(self) -> np.ndarray:
+        """
+        Precomputes the optimal pixel count N_opt for each source based on the
+        median noise across all epochs and the reference frame scene model.
+        """
+        median_error = np.nanmedian(self.flux_err, axis=0)
+        sat_limit = getattr(self, "pixel_saturation_limit", 6e4)
+        pixel_counts = []
+        for sdx in range(self.nsources):
+            flux_est = (
+                float(self.source_flux_estimates[sdx])
+                if hasattr(self, "source_flux_estimates")
+                and np.isfinite(self.source_flux_estimates[sdx])
+                and self.source_flux_estimates[sdx] > 0
+                else 1.0
+            )
+            signal = self.scene_model[sdx] * flux_est
+            mask = make_snr_optimal_aperture(
+                signal=signal,
+                error=median_error,
+                sat_flux=sat_limit,
+                plot=False,
+            )
+            pixel_counts.append(int(mask.sum()))
+        self.snr_optimal_pixel_count = np.array(pixel_counts, dtype=int)
+        return self.snr_optimal_pixel_count
+
+    def _compute_circular_aperture_mask(
+        self, frame_index: int = 0, radius: float = 3.0
+    ) -> np.ndarray:
+        """
+        Computes circular aperture boolean mask of given radius for all sources.
+
+        Parameters
+        ----------
+        frame_index : int
+            Time index.
+        radius : float
+            Aperture radius in pixels.
+
+        Returns
+        -------
+        mask : np.ndarray
+            Boolean array of shape [nsources, npixels].
+        """
+        col = self.column[frame_index]
+        row = self.row[frame_index]
+        srow, scol = self.pixel_coordinates(frame_index=frame_index)
+
+        if np.nanmean(srow) >= row.min():
+            srow_cutout = srow - row.min()
+            scol_cutout = scol - col.min()
+        else:
+            srow_cutout = srow
+            scol_cutout = scol
+
+        col_cutout = col - col.min()
+        row_cutout = row - row.min()
+
+        # Distance from each pixel to each source: shape (nsources, npixels)
+        dx = col_cutout[None, :] - scol_cutout[:, None]
+        dy = row_cutout[None, :] - srow_cutout[:, None]
+        dist = np.hypot(dx, dy)
+
+        return dist <= radius
+
+    def _compute_snr_optimal_aperture_mask(
+        self, frame_index: int = 0
+    ) -> np.ndarray:
+        """
+        Computes SNR optimal aperture boolean mask for all sources at frame_index
+        using a precomputed constant pixel count per source (tracking the top-N
+        pixels of each source's scene model).
+
+        Parameters
+        ----------
+        frame_index : int
+            Time index.
+
+        Returns
+        -------
+        mask : np.ndarray
+            Boolean array of shape [nsources, npixels].
+        """
+        if not hasattr(self, "snr_optimal_pixel_count"):
+            self._compute_snr_optimal_pixel_count()
+
+        masks = []
+        for sdx in range(self.nsources):
+            n_opt = int(self.snr_optimal_pixel_count[sdx])
+            signal = self.scene_model[sdx]
+            flat_sig = np.asarray(signal).ravel()
+            n_opt = max(1, min(len(flat_sig), n_opt))
+            top_indices = np.argpartition(-flat_sig, n_opt - 1)[:n_opt]
+            mask = np.zeros_like(flat_sig, dtype=bool)
+            mask[top_indices] = True
+            masks.append(mask)
+        return np.array(masks, dtype=bool)
+
+    def _measure_aperture_photometry(
         self,
-        frame_index: int = 0,
-        targets: List[int] = [],
+        frame_index: int,
+        targets: List[int],
+        aperture_mask: np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Performs aperture photometry for a single frame and given targets in the image.
+        Measures flux and aperture diagnostics for targets using the given aperture mask.
         """
-        # define aperture mask from PRF isophotes
-        aperture_mask = np.array(self.scene_model >= self.prf_cut[::, None])
         # combine aperture mask with pixel mask to remove bad pixels from aperture photometry
         if hasattr(self, "pixel_mask"):
             _aperture_mask = aperture_mask & self.pixel_mask[frame_index][None, :]
         else:
             _aperture_mask = aperture_mask
 
-        # sum flux and error in the aperture
-        targets_ap_flux = np.array(
-            [
-                [
-                    self.flux[frame_index, ap].sum(),
-                    np.sqrt((self.flux_err[frame_index, ap] ** 2).sum()),
+        # check for background model on self
+        if hasattr(self, "bkg_flux") and self.bkg_flux is not None:
+            bkg = self.bkg_flux[frame_index]
+            bkg_err = (
+                self.bkg_flux_err[frame_index]
+                if hasattr(self, "bkg_flux_err") and self.bkg_flux_err is not None
+                else None
+            )
+            flux_sub = self.flux[frame_index] - bkg
+        else:
+            bkg = None
+            bkg_err = None
+            flux_sub = self.flux[frame_index]
 
-                ]
-                for ap in _aperture_mask[targets]
-            ]
-        )
+        # sum flux, flux error, and background in the aperture
+        targets_ap_flux = []
+        targets_bkg = []
+        for ap in _aperture_mask[targets]:
+            f_val = flux_sub[ap].sum()
+            if bkg_err is not None:
+                err_val = np.sqrt(((self.flux_err[frame_index, ap] ** 2) + (bkg_err[ap] ** 2)).sum())
+            else:
+                err_val = np.sqrt((self.flux_err[frame_index, ap] ** 2).sum())
+            targets_ap_flux.append([f_val, err_val])
+
+            if bkg is not None:
+                b_val = bkg[ap].sum()
+                b_err = np.sqrt((bkg_err[ap] ** 2).sum()) if bkg_err is not None else 0.0
+            else:
+                b_val = 0.0
+                b_err = 0.0
+            targets_bkg.append([b_val, b_err])
+
+        targets_ap_flux = np.array(targets_ap_flux)
+        targets_bkg = np.array(targets_bkg)
+
         # compute aperture metrics
+        flux_weights = (
+            np.asarray(self.source_flux_estimates, dtype=float)
+            if hasattr(self, "source_flux_estimates") and self.source_flux_estimates is not None
+            else None
+        )
         flux_metrics = np.array(
             [
                 compute_FLFRCSAP(self.scene_model, _aperture_mask)[targets],
-                compute_CROWDSAP(self.scene_model, _aperture_mask)[targets],
+                compute_CROWDSAP(
+                    self.scene_model,
+                    _aperture_mask,
+                    flux_weights=flux_weights,
+                )[targets],
             ]
         ).T
         # compute centroids using flux weighted average of pixel coordinates in the aperture
-        targets_centroid = np.array(
-            [
-                [
-                    np.average(
-                        self.dcolumn[tar][_aperture_mask[tar]], # type: ignore
-                        weights=self.flux[frame_index, _aperture_mask[tar]],
-                    ),
-                    np.average(
-                        self.drow[tar][_aperture_mask[tar]], # type: ignore
-                        weights=self.flux[frame_index, _aperture_mask[tar]],
-                    ),
-                ]
-                for tar in targets
-            ]
-        )
-        quality = np.array([(~self.pixel_mask[frame_index][aperture_mask[tar]]).sum() for tar in targets])
-        return np.hstack(
-            [targets_ap_flux, flux_metrics, targets_centroid, [quality]]
-        ), aperture_mask[targets]
+        col_frame = self.column[frame_index]
+        row_frame = self.row[frame_index]
+        srow_nom, scol_nom = self.pixel_coordinates(frame_index=frame_index)
+        corner_row = row_frame.min()
+        corner_col = col_frame.min()
+        if np.nanmean(srow_nom) < corner_row:
+            row_orig = srow_nom + corner_row
+            col_orig = scol_nom + corner_col
+        else:
+            row_orig = srow_nom
+            col_orig = scol_nom
 
-    def do_aperture_photometry(self, targets: List[int] = []) -> None:
+        targets_centroid = []
+        for tar in targets:
+            tar_mask = _aperture_mask[tar]
+            if tar_mask.any():
+                w = np.clip(flux_sub[tar_mask], 0, None)
+                w_sum = np.nansum(w)
+                dcol_tar = col_frame[tar_mask] - col_orig[tar]
+                drow_tar = row_frame[tar_mask] - row_orig[tar]
+                if w_sum > 0:
+                    dc = np.average(dcol_tar, weights=w)
+                    dr = np.average(drow_tar, weights=w)
+                else:
+                    dc = np.nanmean(dcol_tar)
+                    dr = np.nanmean(drow_tar)
+            else:
+                dc, dr = np.nan, np.nan
+            targets_centroid.append([dc, dr])
+        targets_centroid = np.array(targets_centroid)
+
+        if hasattr(self, "pixel_mask"):
+            quality = np.array(
+                [(~self.pixel_mask[frame_index][aperture_mask[tar]]).sum() for tar in targets]
+            )
+        else:
+            quality = np.zeros(len(targets))
+
+        return (
+            np.hstack([targets_ap_flux, flux_metrics, targets_centroid, targets_bkg, quality[:, None]]),
+            aperture_mask[targets],
+        )
+
+    def _single_frame_aperture_photometry(
+        self,
+        frame_index: int = 0,
+        targets: List[int] = [],
+        aperture_type: str = "snr",
+        radius: float = 3.0,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Performs aperture photometry for a single frame and given targets in the image.
+
+        Parameters
+        ----------
+        frame_index : int
+            Time index.
+        targets : list of int
+            List of target indices.
+        aperture_type : str, optional
+            Aperture type: 'snr' (optimal SNR mask), 'circular' (fixed radius),
+            or 'isophote'/'iso' (scene PRF isophote cut). Default is 'snr'.
+        radius : float, optional
+            Radius in pixels if aperture_type is 'circular'. Default is 3.0.
+        """
+        if aperture_type == "circular":
+            aperture_mask = self._compute_circular_aperture_mask(
+                frame_index=frame_index, radius=radius
+            )
+        elif aperture_type in ("isophote", "iso"):
+            aperture_mask = np.array(self.scene_model >= self.prf_cut[::, None])
+        else:
+            aperture_mask = self._compute_snr_optimal_aperture_mask(
+                frame_index=frame_index
+            )
+
+        return self._measure_aperture_photometry(
+            frame_index=frame_index,
+            targets=targets,
+            aperture_mask=aperture_mask,
+        )
+
+    def do_aperture_photometry(
+        self,
+        targets: List[int] = [],
+        aperture_radius: Union[float, int, Sequence[Union[float, int]]] = 3,
+        aperture_type: str = "snr",
+    ) -> None:
         """
         Performs aperture photometry for the given targets in the image.
 
@@ -933,53 +1873,208 @@ class LCExtractor(Machine):
         targets : list of int, optional
             List of target names to fit PRF photometry for. If None, all sources in
             the image will be used.
+        aperture_radius : float, int, or sequence of numbers, optional
+            Radius or list of radii for circular aperture photometry in pixels.
+            Default is 3.
+        aperture_type : str, optional
+            Default aperture method: 'snr' (optimal SNR aperture) or 'isophote'.
+            Default is 'snr'.
         """
-        self._compute_aperture_cut()
+        if targets is None or len(targets) == 0:
+            targets = list(range(len(self.sources)))
+        n_targets = len(targets)
 
-        targets_ap_flux = np.zeros((self.nt, len(targets)))
-        targets_ap_flux_err = np.zeros((self.nt, len(targets)))
-        aperture_metrics = np.zeros((self.nt, len(targets), 2))
-        targets_centroid = np.zeros((self.nt, len(targets), 2))
-        targets_ap_quality = np.zeros((self.nt, len(targets)))
-        aperture_masks_list = []
+        if isinstance(aperture_radius, (int, float, np.integer, np.floating)):
+            radii = [aperture_radius]
+        elif isinstance(aperture_radius, (list, tuple, np.ndarray)):
+            radii = list(aperture_radius)
+        else:
+            raise TypeError(
+                f"`aperture_radius` must be a float, int, or list of numbers, got {type(aperture_radius)}"
+            )
+
+        self.draw_scene(frame_index=0)
+        self._compute_aperture_cut()
+        self._compute_snr_optimal_pixel_count()
+
+        targets_nominal_row = np.zeros((self.nt, n_targets), dtype=np.float64)
+        targets_nominal_col = np.zeros((self.nt, n_targets), dtype=np.float64)
+
+        snr_ap_flux = np.zeros((self.nt, n_targets))
+        snr_ap_flux_err = np.zeros((self.nt, n_targets))
+        snr_ap_metrics = np.zeros((self.nt, n_targets, 2))
+        snr_centroid = np.zeros((self.nt, n_targets, 2))
+        snr_bkg_flux = np.zeros((self.nt, n_targets))
+        snr_bkg_flux_err = np.zeros((self.nt, n_targets))
+        snr_ap_quality = np.zeros((self.nt, n_targets))
+        snr_masks = []
+
+        iso_ap_flux = np.zeros((self.nt, n_targets))
+        iso_ap_flux_err = np.zeros((self.nt, n_targets))
+        iso_ap_metrics = np.zeros((self.nt, n_targets, 2))
+        iso_centroid = np.zeros((self.nt, n_targets, 2))
+        iso_bkg_flux = np.zeros((self.nt, n_targets))
+        iso_bkg_flux_err = np.zeros((self.nt, n_targets))
+        iso_ap_quality = np.zeros((self.nt, n_targets))
+        iso_masks = []
+
+        circ_data = {}
+        for r in radii:
+            r_key = _format_aperture_key(r)
+            circ_data[r_key] = {
+                "radius": float(r),
+                "flux": np.zeros((self.nt, n_targets)),
+                "flux_err": np.zeros((self.nt, n_targets)),
+                "metrics": np.zeros((self.nt, n_targets, 2)),
+                "centroid": np.zeros((self.nt, n_targets, 2)),
+                "bkg_flux": np.zeros((self.nt, n_targets)),
+                "bkg_flux_err": np.zeros((self.nt, n_targets)),
+                "quality": np.zeros((self.nt, n_targets)),
+                "masks": [],
+            }
+
         for tdx in tqdm(
             range(self.nt),
             desc="Performing aperture photometry",
             total=self.nt,
             disable=self.quiet,
         ):
-            # update mean model due to  pixel grid
-            self.draw_scene(frame_index=tdx)
-            # get aperture mask
-            ap_flux, aperture_mask = self._single_frame_aperture_photometry(
-                frame_index=tdx, targets=targets
-            )
-            targets_ap_flux[tdx] = ap_flux[:, 0]
-            targets_ap_flux_err[tdx] = ap_flux[:, 1]
-            aperture_metrics[tdx] = ap_flux[:, 2:4]
-            targets_centroid[tdx] = ap_flux[:, 4:6]
-            targets_ap_quality[tdx] = ap_flux[:, 6]
-            aperture_masks_list.append(aperture_mask)
+            # Record nominal positions of targets for this frame in original image pixel grid
+            srow_nom, scol_nom = self.pixel_coordinates(frame_index=tdx)
+            corner_row = self.row[tdx].min()
+            corner_col = self.column[tdx].min()
+            if np.nanmean(srow_nom) < corner_row:
+                row_orig = srow_nom + corner_row
+                col_orig = scol_nom + corner_col
+            else:
+                row_orig = srow_nom
+                col_orig = scol_nom
+            targets_nominal_row[tdx, :] = row_orig[targets]
+            targets_nominal_col[tdx, :] = col_orig[targets]
 
-        aperture_masks = np.array(aperture_masks_list)
+            # update mean model due to pixel grid
+            self.draw_scene(frame_index=tdx)
+
+            # 1. Optimal SNR aperture
+            ap_flux, snr_mask = self._single_frame_aperture_photometry(
+                frame_index=tdx, targets=targets, aperture_type=aperture_type
+            )
+            snr_ap_flux[tdx] = ap_flux[:, 0]
+            snr_ap_flux_err[tdx] = ap_flux[:, 1]
+            snr_ap_metrics[tdx] = ap_flux[:, 2:4]
+            snr_centroid[tdx] = ap_flux[:, 4:6]
+            snr_bkg_flux[tdx] = ap_flux[:, 6]
+            snr_bkg_flux_err[tdx] = ap_flux[:, 7]
+            snr_ap_quality[tdx] = ap_flux[:, 8]
+            snr_masks.append(snr_mask)
+
+            # 2. Isophote aperture (uses self.prf_cut)
+            iso_flux, iso_mask = self._single_frame_aperture_photometry(
+                frame_index=tdx, targets=targets, aperture_type="iso"
+            )
+            iso_ap_flux[tdx] = iso_flux[:, 0]
+            iso_ap_flux_err[tdx] = iso_flux[:, 1]
+            iso_ap_metrics[tdx] = iso_flux[:, 2:4]
+            iso_centroid[tdx] = iso_flux[:, 4:6]
+            iso_bkg_flux[tdx] = iso_flux[:, 6]
+            iso_bkg_flux_err[tdx] = iso_flux[:, 7]
+            iso_ap_quality[tdx] = iso_flux[:, 8]
+            iso_masks.append(iso_mask)
+
+            # 3. Circular apertures
+            for r_key, cdict in circ_data.items():
+                c_flux, c_mask = self._single_frame_aperture_photometry(
+                    frame_index=tdx,
+                    targets=targets,
+                    aperture_type="circular",
+                    radius=cdict["radius"],
+                )
+                cdict["flux"][tdx] = c_flux[:, 0]
+                cdict["flux_err"][tdx] = c_flux[:, 1]
+                cdict["metrics"][tdx] = c_flux[:, 2:4]
+                cdict["centroid"][tdx] = c_flux[:, 4:6]
+                cdict["bkg_flux"][tdx] = c_flux[:, 6]
+                cdict["bkg_flux_err"][tdx] = c_flux[:, 7]
+                cdict["quality"][tdx] = c_flux[:, 8]
+                cdict["masks"].append(c_mask)
+
+        snr_masks_arr = np.array(snr_masks)
+        iso_masks_arr = np.array(iso_masks)
+        self.aperture_masks = snr_masks_arr
 
         if not hasattr(self, "lcs"):
             self.lcs = {}
         for sdx, snum in enumerate(targets):
             if snum not in self.lcs.keys():
                 self.lcs[snum] = {}
-            self.lcs[snum]["aperture"] = {
+            snr_flux_corr, snr_flux_err_corr = correct_aperture_flux(
+                flux=snr_ap_flux[:, sdx],
+                flux_err=snr_ap_flux_err[:, sdx],
+                flfrcsap=snr_ap_metrics[:, sdx, 0],
+                crowdsap=snr_ap_metrics[:, sdx, 1],
+            )
+            snr_dict = {
                 "time": self.time,
-                "flux": targets_ap_flux[:, sdx],
-                "flux_err": targets_ap_flux_err[:, sdx],
-                "flfrcsap": aperture_metrics[:, sdx, 0],
-                "crowdsap": aperture_metrics[:, sdx, 1],
-                "centroid_x": targets_centroid[:, sdx, 0],
-                "centroid_y": targets_centroid[:, sdx, 1],
-                "aperture_mask": aperture_masks[:, sdx, :],
-                "quality": targets_ap_quality[:, sdx],
+                "flux": snr_ap_flux[:, sdx],
+                "flux_err": snr_ap_flux_err[:, sdx],
+                "flux_corr": snr_flux_corr,
+                "flux_err_corr": snr_flux_err_corr,
+                "flfrcsap": snr_ap_metrics[:, sdx, 0],
+                "crowdsap": snr_ap_metrics[:, sdx, 1],
+                "centroid_x": targets_nominal_col[:, sdx] + snr_centroid[:, sdx, 0],
+                "centroid_y": targets_nominal_row[:, sdx] + snr_centroid[:, sdx, 1],
+                "bkg_flux": snr_bkg_flux[:, sdx],
+                "bkg_flux_err": snr_bkg_flux_err[:, sdx],
+                "aperture_mask": snr_masks_arr[:, sdx, :],
+                "quality": snr_ap_quality[:, sdx],
             }
-        self.aperture_masks = aperture_masks
+            iso_flux_corr, iso_flux_err_corr = correct_aperture_flux(
+                flux=iso_ap_flux[:, sdx],
+                flux_err=iso_ap_flux_err[:, sdx],
+                flfrcsap=iso_ap_metrics[:, sdx, 0],
+                crowdsap=iso_ap_metrics[:, sdx, 1],
+            )
+            iso_dict = {
+                "time": self.time,
+                "flux": iso_ap_flux[:, sdx],
+                "flux_err": iso_ap_flux_err[:, sdx],
+                "flux_corr": iso_flux_corr,
+                "flux_err_corr": iso_flux_err_corr,
+                "flfrcsap": iso_ap_metrics[:, sdx, 0],
+                "crowdsap": iso_ap_metrics[:, sdx, 1],
+                "centroid_x": targets_nominal_col[:, sdx] + iso_centroid[:, sdx, 0],
+                "centroid_y": targets_nominal_row[:, sdx] + iso_centroid[:, sdx, 1],
+                "bkg_flux": iso_bkg_flux[:, sdx],
+                "bkg_flux_err": iso_bkg_flux_err[:, sdx],
+                "aperture_mask": iso_masks_arr[:, sdx, :],
+                "quality": iso_ap_quality[:, sdx],
+            }
+            self.lcs[snum]["aperture_snr"] = snr_dict
+            self.lcs[snum]["aperture_iso"] = iso_dict
+
+            for r_key, cdict in circ_data.items():
+                cmasks_arr = np.array(cdict["masks"])
+                c_flux_corr, c_flux_err_corr = correct_aperture_flux(
+                    flux=cdict["flux"][:, sdx],
+                    flux_err=cdict["flux_err"][:, sdx],
+                    flfrcsap=cdict["metrics"][:, sdx, 0],
+                    crowdsap=cdict["metrics"][:, sdx, 1],
+                )
+                self.lcs[snum][r_key] = {
+                    "time": self.time,
+                    "flux": cdict["flux"][:, sdx],
+                    "flux_err": cdict["flux_err"][:, sdx],
+                    "flux_corr": c_flux_corr,
+                    "flux_err_corr": c_flux_err_corr,
+                    "flfrcsap": cdict["metrics"][:, sdx, 0],
+                    "crowdsap": cdict["metrics"][:, sdx, 1],
+                    "centroid_x": targets_nominal_col[:, sdx] + cdict["centroid"][:, sdx, 0],
+                    "centroid_y": targets_nominal_row[:, sdx] + cdict["centroid"][:, sdx, 1],
+                    "bkg_flux": cdict["bkg_flux"][:, sdx],
+                    "bkg_flux_err": cdict["bkg_flux_err"][:, sdx],
+                    "aperture_mask": cmasks_arr[:, sdx, :],
+                    "quality": cdict["quality"][:, sdx],
+                }
 
         return
     

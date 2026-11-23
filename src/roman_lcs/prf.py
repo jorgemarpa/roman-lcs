@@ -304,3 +304,32 @@ def generate_chromatic_psf_library(
             psf_library[pos_key][wl] = over_prf_dist
 
     return psf_library
+
+
+class PhotutilsPSFAdapter:
+    """Adapts a photutils ImagePSF / EPSFModel from roman-epsf to LCExtractor's PRF interface."""
+
+    def __init__(self, model):
+        self.epsf = model
+        oversamp = getattr(model, "oversampling", (1, 1))
+        oversamp_area = (
+            float(oversamp[0] * oversamp[1])
+            if hasattr(oversamp, "__len__")
+            else float(oversamp) ** 2
+        )
+        # Unit-flux normalized integral on detector pixels
+        self.prf_sum = float(model.data.sum() / oversamp_area)
+
+    def evaluate_from_position(self, center, shape, corner=(0, 0)):
+        """Evaluates ePSF over a 2D cutout grid given center=(row, col)."""
+        row_c, col_c = center
+        ny, nx = shape
+        dx = np.arange(corner[1], corner[1] + nx, dtype=float) - col_c
+        dy = np.arange(corner[0], corner[0] + ny, dtype=float) - row_c
+        dx_grid, dy_grid = np.meshgrid(dx, dy, indexing="xy")
+        eval_stamp = self.epsf.evaluate(dx_grid, dy_grid, flux=1.0, x_0=0.0, y_0=0.0)
+        return dx_grid + col_c, dy_grid + row_c, eval_stamp
+
+    def evaluate_from_array(self, dcol, drow):
+        """Evaluates ePSF for 1D or 2D coordinate offsets."""
+        return self.epsf.evaluate(dcol, drow, flux=1.0, x_0=0.0, y_0=0.0)

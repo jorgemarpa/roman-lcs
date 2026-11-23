@@ -134,6 +134,7 @@ class Machine(object):
         ).to(u.arcsec) # type: ignore
 
         # Ensure we have a plain numpy ndarray of floats (avoid pandas ExtensionArray)
+        self.sources_flux_column = sources_flux_column
         self.source_flux_estimates = self.sources[sources_flux_column].to_numpy(dtype=float)
 
         if time_mask is None:
