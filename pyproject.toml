@@ -27,6 +27,7 @@ roman-epsf = {git = "https://github.com/jorgemarpa/roman-epsf.git"}
 
 [tool.poetry.scripts]
 roman-lc-extract = "roman_lcs.scripts.extract_lightcurve:main"
+roman-lc-extract-batch = "roman_lcs.scripts.extract_batch_lightcurves:main"
 
 [tool.poetry.group.dev.dependencies]
 mkdocs = "^1.6.0"
