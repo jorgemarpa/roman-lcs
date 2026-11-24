@@ -4,12 +4,18 @@ Stores PSF and multiple aperture light curves within a unified binary table HDU.
 """
 
 import datetime
+import io
 import logging
 import os
 from typing import Any, Dict, Optional, Tuple, Union
 
 from astropy.io import fits
 import numpy as np
+
+try:
+    import s3fs
+except ImportError:
+    s3fs = None
 
 from . import __version__
 from .aperture import correct_aperture_flux
@@ -69,10 +75,14 @@ def write_lightcurve_fits(
     meta: Optional[Dict[str, Any]] = None,
     cadenceno: Optional[np.ndarray] = None,
     overwrite: bool = True,
+    to_s3: bool = False,
+    s3_fs: Optional[Any] = None,
+    s3_kwargs: Optional[Dict[str, Any]] = None,
+    **kwargs: Any,
 ) -> fits.HDUList:
     """
     Write a target light curve dictionary containing PSF and multiple aperture
-    measurements to a standardized FITS file.
+    measurements to a standardized FITS file, optionally uploading to an AWS S3 bucket.
 
     Parameters
     ----------
@@ -80,19 +90,41 @@ def write_lightcurve_fits(
         Light curve dictionary for a single target, containing keys such as
         'psf', 'aperture_snr', 'aperture_iso', 'aperture_3pix', etc.
     output_path : str, optional
-        Filepath where the FITS file will be saved.
+        Filepath or S3 key where the FITS file will be saved.
     meta : dict, optional
         Observational metadata keywords to store in the PRIMARY header.
     cadenceno : np.ndarray, optional
         Cadence sequence index array. If None, uses np.arange(len(time)).
     overwrite : bool, optional
         Whether to overwrite an existing file. Default is True.
+    to_s3 : bool, optional
+        Whether to write the output directly to an S3 bucket using `s3fs`. Default is False.
+    s3_fs : s3fs.S3FileSystem or fsspec filesystem, optional
+        Pre-configured S3/fsspec filesystem instance (useful for custom auth or testing).
+    s3_kwargs : dict, optional
+        Keyword arguments passed to `s3fs.S3FileSystem(...)` if `s3_fs` is None.
+    **kwargs : Any
+        Additional keyword arguments. Accepts `bucket_name` (str) as the mandatory AWS S3
+        bucket name when writing to S3.
 
     Returns
     -------
     hdul : astropy.io.fits.HDUList
         Constructed HDUList containing PRIMARY, LIGHTCURVE, and optional APERTURE HDUs.
     """
+    bucket_name = kwargs.pop("bucket_name", None)
+
+    write_to_s3 = (
+        to_s3
+        or (bucket_name is not None)
+        or (output_path is not None and str(output_path).startswith("s3://"))
+    )
+
+    if write_to_s3:
+        if not bucket_name or not str(bucket_name).strip():
+            raise ValueError("`bucket_name` is a mandatory argument when writing to S3.")
+        if not output_path or not str(output_path).strip():
+            raise ValueError("An `output_path` (S3 key or path) must be provided when writing to S3.")
     if meta is None:
         meta = {}
 
@@ -353,22 +385,68 @@ def write_lightcurve_fits(
             mask_hdu.header[f"APNAME{idx}"] = (k, f"Aperture name for slice {idx}")
         hdul.append(mask_hdu)
 
-    # 6. Write to disk if path specified
-    if output_path is not None:
+    # 6. Write to disk or S3 if path specified
+    if write_to_s3:
+        bname = str(bucket_name).strip().strip("/")
+        clean_path = str(output_path).strip()
+        if clean_path.startswith("s3://"):
+            clean_path = clean_path[len("s3://"):]
+
+        if clean_path.startswith(f"{bname}/"):
+            key = clean_path[len(f"{bname}/"):].lstrip("/")
+        else:
+            key = clean_path.lstrip("/")
+
+        s3_key_path = f"{bname}/{key}" if key else bname
+
+        if s3_fs is not None:
+            fs = s3_fs
+        else:
+            if s3fs is None:
+                raise ImportError(
+                    "The `s3fs` package is required to write to S3. "
+                    "Please install it (e.g. `pip install s3fs`)."
+                )
+            fs = s3fs.S3FileSystem(**(s3_kwargs or {}))
+
+        if not overwrite and fs.exists(s3_key_path):
+            raise FileExistsError(f"Target S3 file already exists and overwrite=False: s3://{s3_key_path}")
+
+        buf = io.BytesIO()
+        hdul.writeto(buf, checksum=True)
+        buf.seek(0)
+        with fs.open(s3_key_path, "wb") as f:
+            f.write(buf.getvalue())
+        log.info(f"Successfully wrote light curve FITS to s3://{s3_key_path}")
+
+    elif output_path is not None:
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
         hdul.writeto(output_path, overwrite=overwrite, checksum=True)
 
     return hdul
 
 
-def read_lightcurve_fits(filepath: str) -> Tuple[Dict[str, Dict[str, Any]], fits.Header]:
+def read_lightcurve_fits(
+    filepath: Union[str, Any],
+    s3_fs: Optional[Any] = None,
+    s3_kwargs: Optional[Dict[str, Any]] = None,
+    **kwargs: Any,
+) -> Tuple[Dict[str, Dict[str, Any]], fits.Header]:
     """
     Read a Roman light curve FITS file and reconstruct the nested light curve dictionary.
+    Supports local filesystem paths, file-like objects, or S3 paths using `s3fs`.
 
     Parameters
     ----------
-    filepath : str
-        Path to the FITS file.
+    filepath : str or file-like object
+        Path to the FITS file, or an S3 key / URI.
+    s3_fs : s3fs.S3FileSystem or fsspec filesystem, optional
+        Pre-configured S3/fsspec filesystem instance.
+    s3_kwargs : dict, optional
+        Keyword arguments passed to `s3fs.S3FileSystem(...)` if `s3_fs` is None.
+    **kwargs : Any
+        Additional keyword arguments. Accepts `bucket_name` (str) if reading from S3
+        and bucket is not included in URI.
 
     Returns
     -------
@@ -377,7 +455,45 @@ def read_lightcurve_fits(filepath: str) -> Tuple[Dict[str, Dict[str, Any]], fits
     primary_header : astropy.io.fits.Header
         Header of the PRIMARY HDU containing metadata cards.
     """
-    with fits.open(filepath) as hdul:
+    bucket_name = kwargs.pop("bucket_name", None)
+
+    is_s3 = (
+        s3_fs is not None
+        or (bucket_name is not None)
+        or (isinstance(filepath, str) and filepath.startswith("s3://"))
+    )
+
+    if is_s3:
+        if s3_fs is not None:
+            fs = s3_fs
+        else:
+            if s3fs is None:
+                raise ImportError(
+                    "The `s3fs` package is required to read from S3. "
+                    "Please install it (e.g. `pip install s3fs`)."
+                )
+            fs = s3fs.S3FileSystem(**(s3_kwargs or {}))
+
+        clean_path = str(filepath).strip()
+        if clean_path.startswith("s3://"):
+            clean_path = clean_path[len("s3://"):]
+
+        if bucket_name:
+            bname = str(bucket_name).strip().strip("/")
+            if clean_path.startswith(f"{bname}/"):
+                key = clean_path[len(f"{bname}/"):].lstrip("/")
+            else:
+                key = clean_path.lstrip("/")
+            s3_path = f"{bname}/{key}" if key else bname
+        else:
+            s3_path = clean_path
+
+        with fs.open(s3_path, "rb") as f:
+            target_source = io.BytesIO(f.read())
+    else:
+        target_source = filepath
+
+    with fits.open(target_source) as hdul:
         pri_header = hdul[0].header.copy()
         if "LIGHTCURVE" not in hdul:
             raise KeyError(f"Expected HDU 'LIGHTCURVE' not found in {filepath}.")

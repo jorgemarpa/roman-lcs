@@ -264,6 +264,9 @@ def test_cli_argument_parsing():
         "--detector", "2",
         "--cutout-size", "25",
         "--aperture-radii", "3", "5",
+        "--catalog", "/tmp/cat.csv",
+        "--epsf", "/tmp/epsf.fits",
+        "--image-list", "/tmp/images.txt",
         "--output-dir", "/tmp",
     ])
     assert np.isclose(args.ra, 250.370832)
@@ -275,6 +278,14 @@ def test_cli_argument_parsing():
     assert args.aperture_radii == [3.0, 5.0]
     assert args.model_bkg is True
     assert args.fit_offsets is True
+    assert args.catalog == "/tmp/cat.csv"
+    assert args.epsf == "/tmp/epsf.fits"
+    assert args.image_list == "/tmp/images.txt"
+    assert args.output_dir == "/tmp"
+
+    # Verify --data-dir is no longer recognized
+    with pytest.raises(SystemExit):
+        parse_args(["--ra", "1.0", "--dec", "2.0", "--pid", "1055", "--filter", "F146", "--detector", "2", "--data-dir", "/tmp"])
 
     det_int, det_str = normalize_detector("WFI02")
     assert det_int == 2
@@ -283,3 +294,114 @@ def test_cli_argument_parsing():
     det_int2, det_str2 = normalize_detector(7)
     assert det_int2 == 7
     assert det_str2 == "wfi07"
+
+
+def test_write_lightcurve_fits_s3_mandatory_bucket_name():
+    lcs = {"psf": {"time": np.array([1.0, 2.0]), "flux": np.array([10.0, 11.0])}}
+
+    # to_s3=True without bucket_name in kwargs should raise ValueError
+    with pytest.raises(ValueError, match="`bucket_name` is a mandatory argument"):
+        write_lightcurve_fits(lcs, output_path="lc.fits", to_s3=True)
+
+    # Empty bucket_name should raise ValueError
+    with pytest.raises(ValueError, match="`bucket_name` is a mandatory argument"):
+        write_lightcurve_fits(lcs, output_path="lc.fits", to_s3=True, bucket_name="")
+
+    with pytest.raises(ValueError, match="`bucket_name` is a mandatory argument"):
+        write_lightcurve_fits(lcs, output_path="lc.fits", to_s3=True, bucket_name="   ")
+
+    # s3:// path without bucket_name should also require bucket_name
+    with pytest.raises(ValueError, match="`bucket_name` is a mandatory argument"):
+        write_lightcurve_fits(lcs, output_path="s3://my-bucket/lc.fits")
+
+    # Missing output_path when writing to S3
+    with pytest.raises(ValueError, match="An `output_path` .* must be provided"):
+        write_lightcurve_fits(lcs, output_path=None, to_s3=True, bucket_name="my-bucket")
+
+
+def test_write_and_read_lightcurve_fits_s3_mock():
+    import fsspec
+
+    # Use in-memory filesystem to simulate S3FS
+    mem_fs = fsspec.filesystem("memory")
+    mem_fs.mkdir("roman-test-bucket")
+
+    lcs = {
+        "psf": {
+            "time": np.array([2460001.0, 2460002.0, 2460003.0]),
+            "flux": np.array([100.0, 102.5, 99.8], dtype=np.float32),
+            "flux_err": np.array([1.0, 1.1, 1.0], dtype=np.float32),
+        }
+    }
+    meta = {"PID": 1055, "FILTER": "F146", "DETECTOR": "WFI02", "TARGETID": "TEST_S3_01"}
+
+    s3_path = "pid1055/lightcurves/test_lc.fits"
+    hdul = write_lightcurve_fits(
+        lcs=lcs,
+        output_path=s3_path,
+        meta=meta,
+        to_s3=True,
+        bucket_name="roman-test-bucket",
+        s3_fs=mem_fs,
+        overwrite=True,
+    )
+    assert hdul is not None
+    assert mem_fs.exists("roman-test-bucket/pid1055/lightcurves/test_lc.fits")
+
+    # Test overwrite=False raises FileExistsError
+    with pytest.raises(FileExistsError, match="Target S3 file already exists"):
+        write_lightcurve_fits(
+            lcs=lcs,
+            output_path=s3_path,
+            meta=meta,
+            to_s3=True,
+            bucket_name="roman-test-bucket",
+            s3_fs=mem_fs,
+            overwrite=False,
+        )
+
+    # Read back from mock S3
+    read_lcs, read_hdr = read_lightcurve_fits(
+        filepath=f"s3://roman-test-bucket/{s3_path}",
+        bucket_name="roman-test-bucket",
+        s3_fs=mem_fs,
+    )
+    assert "psf" in read_lcs
+    assert np.allclose(read_lcs["psf"]["time"], lcs["psf"]["time"])
+    assert np.allclose(read_lcs["psf"]["flux"], lcs["psf"]["flux"])
+    assert read_hdr["TARGETID"] == "TEST_S3_01"
+    assert read_hdr["PROGRAM"] == 1055
+
+
+def test_extractor_to_fits_s3(sample_extractor):
+    import fsspec
+
+    mem_fs = fsspec.filesystem("memory")
+    mem_fs.mkdir("roman-extractor-bucket")
+
+    sample_extractor.fit_prf_photometry(
+        targets=[0],
+        model_bkg=True,
+        bkg_nknots=3,
+        do_aperture=True,
+        aperture_radius=3,
+    )
+
+    s3_key = "lightcurves/extractor_target0.fits"
+    hdul = sample_extractor.to_fits(
+        target=0,
+        path=s3_key,
+        to_s3=True,
+        bucket_name="roman-extractor-bucket",
+        s3_fs=mem_fs,
+    )
+    assert mem_fs.exists(f"roman-extractor-bucket/{s3_key}")
+
+    read_lcs, hdr = read_lightcurve_fits(
+        filepath=s3_key,
+        bucket_name="roman-extractor-bucket",
+        s3_fs=mem_fs,
+    )
+    assert "psf" in read_lcs
+    assert len(read_lcs["psf"]["flux"]) == sample_extractor.nt
+

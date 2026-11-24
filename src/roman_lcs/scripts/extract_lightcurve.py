@@ -87,24 +87,35 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
         default=True,
         help="Whether to iteratively fit sub-pixel centroid offsets using scene gradients.",
     )
-    parser.add_argument("--output", type=str, default=None, help="Explicit path to output FITS light curve file.")
+    parser.add_argument(
+        "--catalog",
+        type=str,
+        default=None,
+        help="Dedicated path to source catalog file (CSV or Parquet).",
+    )
+    parser.add_argument(
+        "--epsf",
+        type=str,
+        default=None,
+        help="Dedicated path to photutils ePSF model FITS file.",
+    )
+    parser.add_argument(
+        "--image-list",
+        type=str,
+        default=None,
+        help="Path to text file containing paths of calibrated L2 ASDF images (one per line).",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Explicit path or filename for output FITS light curve file.",
+    )
     parser.add_argument(
         "--output-dir",
         type=str,
-        default=None,
-        help="Directory to save output if --output is not set (defaults to <data-dir>/pid<PID>/lightcurves).",
-    )
-    parser.add_argument(
-        "--fig-dir",
-        type=str,
-        default=None,
-        help="Directory to save diagnostic figures (defaults to <data-dir>/pid<PID>/figures).",
-    )
-    parser.add_argument(
-        "--data-dir",
-        type=str,
-        default=None,
-        help="Common root data directory containing Roman data organized by PID (e.g. /path/to/romcom).",
+        default=".",
+        help="Target folder where output light curves and figures will be saved.",
     )
     parser.add_argument("--max-files", type=int, default=None, help="Maximum number of exposures to process (useful for tests).")
     parser.add_argument("--n-workers", type=int, default=8, help="Number of worker processes for cutout extraction.")
@@ -474,13 +485,16 @@ def extract_lightcurve(
     aperture_radii: Union[float, List[float]] = 3.0,
     model_bkg: bool = True,
     fit_offsets: bool = True,
+    catalog: Optional[str] = None,
+    epsf: Optional[str] = None,
+    image_list: Optional[str] = None,
     output_path: Optional[str] = None,
     output_dir: Optional[str] = None,
-    fig_dir: Optional[str] = None,
-    data_dir: Optional[str] = None,
     max_files: Optional[int] = None,
     n_workers: int = 8,
     plot: bool = False,
+    to_s3: bool = False,
+    **kwargs: Any,
 ) -> str:
     """
     Execute full light curve extraction for given target coordinates and observation metadata.
@@ -503,13 +517,23 @@ def extract_lightcurve(
     log.info("=" * 60)
 
     # 1. Locate L2 ASDF files
-    l2_files = find_l2_files(
-        pid=pid,
-        detector_int=det_int,
-        filter_name=filter_upper,
-        data_dir=data_dir,
-        max_files=max_files,
-    )
+    if image_list is not None:
+        if not os.path.isfile(image_list):
+            raise FileNotFoundError(f"Image list file not found: {image_list}")
+        with open(image_list, "r") as f:
+            l2_files = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
+        if not l2_files:
+            raise ValueError(f"No valid image file paths found in {image_list}")
+        if max_files is not None and max_files > 0:
+            l2_files = l2_files[:max_files]
+        log.info(f"Loaded {len(l2_files)} L2 exposures from image list file: {image_list}")
+    else:
+        l2_files = find_l2_files(
+            pid=pid,
+            detector_int=det_int,
+            filter_name=filter_upper,
+            max_files=max_files,
+        )
 
     # 2. Extract photometric calibration metadata from reference exposure
     log.info(f"Reading photometric metadata from {os.path.basename(l2_files[0])}...")
@@ -517,11 +541,20 @@ def extract_lightcurve(
         phot_dict = af["roman"]["meta"]["photometry"].copy()
 
     # 3. Load catalog and convert magnitudes to L2 DN/s flux
-    cat_df, resolved_cat_path = find_catalog(
-        pid=pid,
-        detector_int=det_int,
-        data_dir=data_dir,
-    )
+    if catalog is not None:
+        if not os.path.isfile(catalog):
+            raise FileNotFoundError(f"Catalog file not found: {catalog}")
+        resolved_cat_path = os.path.abspath(catalog)
+        log.info(f"Loading catalog from {resolved_cat_path}")
+        if resolved_cat_path.endswith(".parquet"):
+            cat_df = pd.read_parquet(resolved_cat_path)
+        else:
+            cat_df = pd.read_csv(resolved_cat_path)
+    else:
+        cat_df, resolved_cat_path = find_catalog(
+            pid=pid,
+            detector_int=det_int,
+        )
 
     mag_col = f"{filter_lower}_mag"
     flux_col = f"{filter_lower}_flux"
@@ -558,12 +591,17 @@ def extract_lightcurve(
         raise ValueError("Target coordinate is outside detector bounds for all provided exposures.")
 
     # 5. Load and adapt ePSF model
-    resolved_epsf_path = find_epsf_path(
-        pid=pid,
-        detector_int=det_int,
-        filter_name=filter_upper,
-        data_dir=data_dir,
-    )
+    if epsf is not None:
+        if not os.path.isfile(epsf):
+            raise FileNotFoundError(f"ePSF model file not found: {epsf}")
+        resolved_epsf_path = os.path.abspath(epsf)
+        log.info(f"Loading ePSF model from {resolved_epsf_path}")
+    else:
+        resolved_epsf_path = find_epsf_path(
+            pid=pid,
+            detector_int=det_int,
+            filter_name=filter_upper,
+        )
     epsf_model, _ = load_epsf(resolved_epsf_path)
     psf_adapter = PhotutilsPSFAdapter(epsf_model)
 
@@ -670,14 +708,14 @@ def extract_lightcurve(
     )
 
     # 10. Save light curve to FITS file using LCExtractor.to_fits
-    if output_dir is None:
-        pid_dir = resolve_pid_dir(pid, data_dir=data_dir)
-        output_dir = os.path.join(pid_dir, "lightcurves")
-    os.makedirs(output_dir, exist_ok=True)
+    target_folder = output_dir if output_dir is not None else "."
+    os.makedirs(target_folder, exist_ok=True)
 
     if output_path is None:
         fname = f"roman_wfi_pid{pid}_wfi{det_int:02d}_{filter_upper}_ra{ra:.5f}_dec{dec:.5f}_lc.fits"
-        output_path = os.path.join(output_dir, fname)
+        output_path = os.path.join(target_folder, fname)
+    elif not os.path.isabs(output_path) and os.path.dirname(output_path) == "":
+        output_path = os.path.join(target_folder, output_path)
 
     extra_meta: Dict[str, Any] = {
         "EPSFFILE": os.path.basename(resolved_epsf_path),
@@ -691,17 +729,15 @@ def extract_lightcurve(
         path=output_path,
         overwrite=True,
         extra_meta=extra_meta,
+        to_s3=to_s3,
+        **kwargs,
     )
     log.info(f"Successfully saved light curve FITS to {output_path}")
 
     # 11. Diagnostic plot
     if plot:
-        if fig_dir is None:
-            pid_dir = resolve_pid_dir(pid, data_dir=data_dir)
-            fig_dir = os.path.join(pid_dir, "figures")
-        os.makedirs(fig_dir, exist_ok=True)
         fname_base = os.path.splitext(os.path.basename(output_path))[0]
-        plot_path = os.path.join(fig_dir, f"{fname_base}_diag.png")
+        plot_path = os.path.join(target_folder, f"{fname_base}_diag.png")
         plot_diagnostics(
             extractor=extractor,
             target_idx=target_idx,
@@ -726,10 +762,11 @@ def main() -> None:
             aperture_radii=args.aperture_radii,
             model_bkg=args.model_bkg,
             fit_offsets=args.fit_offsets,
+            catalog=args.catalog,
+            epsf=args.epsf,
+            image_list=args.image_list,
             output_path=args.output,
             output_dir=args.output_dir,
-            fig_dir=args.fig_dir,
-            data_dir=args.data_dir,
             max_files=args.max_files,
             n_workers=args.n_workers,
             plot=args.plot,

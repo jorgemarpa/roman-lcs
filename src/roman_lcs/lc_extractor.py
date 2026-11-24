@@ -1006,10 +1006,14 @@ class LCExtractor(Machine):
         path: Optional[str] = None,
         overwrite: bool = True,
         extra_meta: Optional[Dict[str, Any]] = None,
+        to_s3: bool = False,
+        s3_fs: Optional[Any] = None,
+        s3_kwargs: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> Union[fits.HDUList, Dict[Union[int, str], fits.HDUList]]:
         """
         Saves target light curve(s) to a standardized FITS file using `roman_lcs.io`.
+        Supports saving to local disk or directly to an S3 bucket via `s3fs`.
 
         Parameters
         ----------
@@ -1017,13 +1021,20 @@ class LCExtractor(Machine):
             Target index to save. If None, saves all extracted targets (or writes
             multiple files if path contains a formatting placeholder).
         path : str, optional
-            Path where the FITS file will be written.
+            Path or S3 key where the FITS file will be written.
         overwrite : bool, optional
             Whether to overwrite existing files. Default is True.
         extra_meta : dict, optional
             Additional metadata cards to include in PRIMARY header.
+        to_s3 : bool, optional
+            Whether to write the output directly to an S3 bucket using `s3fs`. Default is False.
+        s3_fs : s3fs.S3FileSystem or fsspec filesystem, optional
+            Pre-configured S3/fsspec filesystem instance.
+        s3_kwargs : dict, optional
+            Keyword arguments passed to `s3fs.S3FileSystem(...)`.
         **kwargs : Any
             Additional metadata keyword arguments for PRIMARY header.
+            Accepts `bucket_name` (str) as the mandatory AWS S3 bucket name when writing to S3.
 
         Returns
         -------
@@ -1031,6 +1042,8 @@ class LCExtractor(Machine):
         """
         if not hasattr(self, "lcs") or len(self.lcs) == 0:
             raise AttributeError("No light curves extracted yet. Run `fit_prf_photometry` first.")
+
+        bucket_name = kwargs.pop("bucket_name", None)
 
         from .io import write_lightcurve_fits
 
@@ -1067,6 +1080,10 @@ class LCExtractor(Machine):
                         meta=t_meta,
                         cadenceno=self.cadenceno if hasattr(self, "cadenceno") else None,
                         overwrite=overwrite,
+                        to_s3=to_s3,
+                        bucket_name=bucket_name,
+                        s3_fs=s3_fs,
+                        s3_kwargs=s3_kwargs,
                     )
                 return out
 
@@ -1087,6 +1104,10 @@ class LCExtractor(Machine):
             meta=base_meta,
             cadenceno=self.cadenceno if hasattr(self, "cadenceno") else None,
             overwrite=overwrite,
+            to_s3=to_s3,
+            bucket_name=bucket_name,
+            s3_fs=s3_fs,
+            s3_kwargs=s3_kwargs,
         )
 
     def fit_prf_photometry(
