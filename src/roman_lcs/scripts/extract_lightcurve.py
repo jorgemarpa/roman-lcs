@@ -5,7 +5,6 @@ photometry, and saves standardized FITS light curves.
 """
 
 import argparse
-import datetime
 import glob
 import logging
 import os
@@ -13,20 +12,17 @@ import sys
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import astropy.units as u
-from astropy.coordinates import SkyCoord
-from astropy.io import fits
-from astropy.visualization import simple_norm
-from astropy.wcs import WCS
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-
+from astropy.coordinates import SkyCoord
+from astropy.visualization import simple_norm
+from astropy.wcs import WCS
 from roman_cuts.com import make_cutout, query_mast_files
 from roman_cuts.com.io import _open_asdf
 from roman_epsf import load_epsf
 
 from roman_lcs import LCExtractor, PhotutilsPSFAdapter
-from roman_lcs.io import write_lightcurve_fits
 from roman_lcs.utils import convert_abmag_to_l2_flux
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")

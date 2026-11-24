@@ -1,21 +1,17 @@
 site_name: Roman LightCurves
 nav:
   - Home: README.md
-  - API: 
-    - Machine: machine.md
-    - RomanMachine: roman.md
-    - Utils: utils.md
-  - Tutorials:
-    - Build PRF shape: notebooks/romanmachine_build_prf.ipynb
-    - Extract LCs: notebooks/romanmachine_fit_phot.ipynb
+  - API:
+      - "Light Curve Extraction": lc_extractor.md
+      - "Aperture Photometry": aperture.md
+      - "PRF Modeling": prf.md
+      - "I/O Utilities": io.md
+      - "General Utilities": utils.md
 
 extra:
-    social:
-      - icon: fontawesome/brands/github 
-        link: https://github.com/jorgemarpa
-    version:
-      provider: mike
-      default: stable
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/jorgemarpa
 
 copyright: Copyright &copy; 2025 Jorge Martinez-Palomera
 
@@ -28,17 +24,11 @@ theme:
     - header.autohide
     - navigation.tabs
     - content.code.copy
-
-  palette: 
-
-    # Palette toggle for light mode
+  palette:
     - scheme: default
       toggle:
-        icon: material/brightness-7 
+        icon: material/brightness-7
         name: Switch to dark mode
-      primary: deep purple
-
-    # Palette toggle for dark mode
     - scheme: slate
       toggle:
         icon: material/brightness-4
@@ -47,6 +37,7 @@ theme:
       secondary: indigo
 
 repo_url: https://github.com/jorgemarpa/roman-lcs
+
 plugins:
   - search
   - autorefs
@@ -70,9 +61,6 @@ plugins:
             show_root_members_full_path: false
             show_symbol_type_heading: true
             show_root_heading: true
-            show_source: false
-      watch:
-        - src/roman_lcs
 
 markdown_extensions:
   - pymdownx.highlight:

@@ -8,10 +8,10 @@ Tests for performance optimizations in roman-lcs:
 """
 
 import numpy as np
-import pytest
 from scipy import sparse
-from roman_lcs.utils import solve_linear_model
+
 from roman_lcs.prf import PhotutilsPSFAdapter
+from roman_lcs.utils import solve_linear_model
 
 
 def test_solve_linear_model_cholesky_vs_lu():
@@ -99,7 +99,6 @@ def test_photutils_adapter_evaluate_local():
 
 def test_coordinate_memoization():
     """Verify that pixel_coordinates caches results properly."""
-    from types import SimpleNamespace
     import pandas as pd
 
     class MockWCS:

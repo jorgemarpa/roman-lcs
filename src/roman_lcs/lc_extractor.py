@@ -6,6 +6,7 @@ from enum import IntFlag
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import astropy.units as u
+import lightkurve as lk
 import matplotlib.axes
 import matplotlib.figure
 import matplotlib.pyplot as plt
@@ -15,7 +16,7 @@ from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.stats import sigma_clip
 from astropy.visualization import simple_norm
-from astropy.wcs.wcsapi import HighLevelWCSWrapper, SlicedLowLevelWCS
+from astropy.wcs.wcsapi import HighLevelWCSWrapper
 from astropy.wcs.wcsapi.wrappers.base import BaseWCSWrapper
 from roman_cuts import RomanCuts
 from scipy import ndimage, sparse
@@ -287,10 +288,7 @@ class LCExtractor(Machine):
         fname : str or list of strings
             File name or list of file names of the FFI files.
         cutout_size : int, optional
-            Size of the cutout in , assumed to be squared
-        cutout_origin : tuple of ints
-            Origin pixel coordinates where to start the cut out. The cutout will be
-            centered in `cutout_origin + cutout_size / 2`. Follows matrix indexing.
+            Size of the cutout in pixels, assumed to be squared.
         cutout_center : tuple of floats, optional
             Center of the cutout in RA, Dec coordinates. If provided, the cutout will be
             centered on this position and the pixel grid will be adjusted to account for
@@ -1003,6 +1001,68 @@ class LCExtractor(Machine):
 
         return ax
 
+    def get_lightcurves(self, mode: str = "lk") -> dict:
+        """
+        Bundle light curves as `lightkurve` objects if `mode=="lk"`
+        or as a DataFrame if `mode=="table"`.
+
+        Parameters
+        ----------
+        mode : str
+            What type of light curve will be created. Default is 'lk'.
+        """
+        if not hasattr(self, "lcs"):
+            raise AttributeError("No light curve has been extracted yet, run `self.fit_prf_photometry` first")
+        if mode == "lk":
+            lcs = {}
+            for idx, val in self.lcs.items():
+                psf_lc = {f"psf_{k}": v for k, v in val["psf"].items()}
+                if "psf_time" in psf_lc:
+                    del psf_lc["psf_time"]
+
+                ap_data = val.get("aperture_snr", val.get("aperture_iso", None))
+                if ap_data is not None:
+                    ap_meta_cols = [
+                        "flfrcsap",
+                        "crowdsap",
+                        "centroid_x",
+                        "centroid_y",
+                        "bkg_flux",
+                        "bkg_flux_err",
+                        "flux_corr",
+                        "flux_err_corr",
+                        "quality",
+                    ]
+                    extra_cols = {f"ap_{k}": v for k, v in ap_data.items() if k in ap_meta_cols}
+                    # Also include any circular apertures in data
+                    for ap_name, ap_dict in val.items():
+                        if ap_name.startswith("aperture_") and ap_name not in ("aperture_snr", "aperture_iso"):
+                            for k, v in ap_dict.items():
+                                if k not in ("time", "aperture_mask"):
+                                    extra_cols[f"{ap_name}_{k}"] = v
+                    time = ap_data["time"] * u.d
+                    flux = ap_data["flux"] * u.electron / u.second
+                    flux_err = ap_data["flux_err"] * u.electron / u.second
+                else:
+                    extra_cols = {}
+                    time = val["psf"]["time"] * u.d
+                    flux = val["psf"]["flux"] * u.electron / u.second
+                    flux_err = val["psf"]["flux_err"] * u.electron / u.second
+
+                lc = lk.LightCurve(
+                    time=time,
+                    flux=flux,
+                    flux_err=flux_err,
+                    data=extra_cols | psf_lc,
+                )
+                lcs[idx] = lc
+
+            return lcs
+        elif mode == "table":
+            raise NotImplementedError
+        else:
+            raise ValueError(f"Unsupported mode: {mode!r}")
+
     def to_fits(
         self,
         target: Optional[Union[int, str]] = None,
@@ -1352,7 +1412,6 @@ class LCExtractor(Machine):
                     dcol_acc += step_c
 
                     last_w = w
-                    last_werr = werr
 
                     if max(abs(delta_r), abs(delta_c)) < offset_threshold:
                         converged = True
