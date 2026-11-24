@@ -4,7 +4,7 @@ import datetime
 import logging
 import os
 import warnings
-from typing import Any, Callable, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import astropy.units as u
 import matplotlib.pyplot as plt
@@ -16,8 +16,10 @@ from astropy.io import fits
 from astropy.visualization import simple_norm
 from matplotlib import animation, colors, patches
 from patsy import dmatrix
+from scipy import linalg as scipy_linalg
 from scipy import optimize, sparse
 from scipy.ndimage import gaussian_filter1d
+from scipy.signal import savgol_filter
 
 from . import PACKAGEDIR, __version__
 
@@ -259,6 +261,7 @@ def solve_linear_model(
     k: Optional[npt.ArrayLike] = None,
     errors: bool = False,
     nnls: bool = False,
+    method: str = "cholesky",
 ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
     """
     Solves a linear model with design matrix A and observations y:
@@ -290,6 +293,12 @@ def solve_linear_model(
         shape n_observations
     errors: boolean
         Whether to return error estimates of the best fitting weights
+    nnls: boolean, optional
+        Whether to use non-negative least squares
+    method: str, optional
+        Linear solver method to use: 'cholesky' (default, fast for SPD systems)
+        or 'lu' (standard LU decomposition via np.linalg.solve). If Cholesky
+        fails due to ill-conditioning, it will automatically fall back to LU.
 
     Returns
     -------
@@ -324,13 +333,42 @@ def solve_linear_model(
             sigma_w_inv,
             B,
         )
-    else:
-        # w, _, _, _ = np.linalg.lstsq(sigma_w_inv, B)
+        if errors is True:
+            w_err = np.linalg.inv(sigma_w_inv).diagonal() ** 0.5
+            return w, w_err
+        return w
+
+    if method == "cholesky":
+        try:
+            c, low = scipy_linalg.cho_factor(sigma_w_inv, lower=True, check_finite=False)
+            w = scipy_linalg.cho_solve((c, low), B, check_finite=False)
+            if errors is True:
+                # Diagonal of inv(sigma_w_inv) = (L L^T)^-1 = L^-T L^-1
+                # L_inv = solve_triangular(c, I, lower=True)
+                # diag = sum(L_inv**2, axis=0)
+                n_dim = sigma_w_inv.shape[0]
+                L_inv = scipy_linalg.solve_triangular(
+                    c, np.eye(n_dim), lower=True, check_finite=False
+                )
+                diag_var = np.sum(L_inv**2, axis=0)
+                w_err = np.sqrt(np.maximum(diag_var, 0.0))
+                return w, w_err
+            return w
+        except (scipy_linalg.LinAlgError, np.linalg.LinAlgError, ValueError):
+            # Gracefully fall back to LU if matrix is non-positive-definite
+            w = np.linalg.solve(sigma_w_inv, B)
+            if errors is True:
+                w_err = np.linalg.inv(sigma_w_inv).diagonal() ** 0.5
+                return w, w_err
+            return w
+    elif method == "lu":
         w = np.linalg.solve(sigma_w_inv, B)
-    if errors is True:
-        w_err = np.linalg.inv(sigma_w_inv).diagonal() ** 0.5
-        return w, w_err
-    return w
+        if errors is True:
+            w_err = np.linalg.inv(sigma_w_inv).diagonal() ** 0.5
+            return w, w_err
+        return w
+    else:
+        raise ValueError(f"Unknown solver method '{method}', expected 'cholesky' or 'lu'")
 
 
 def sparse_lessthan(
@@ -982,6 +1020,7 @@ def plot_img_aperture(
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
     cnorm: Optional[colors.Normalize] = None,
+    cmap: str = "viridis",
 ):
     """
     Plots an image with an optional aperture mask.
@@ -1040,7 +1079,7 @@ def plot_img_aperture(
     # Plot image, colorbar and marker
     im = ax.imshow(
         img,
-        cmap="viridis",
+        cmap=cmap,
         vmin=vmin,
         vmax=vmax,
         norm=cnorm,
@@ -1049,7 +1088,7 @@ def plot_img_aperture(
         extent=extent,
     )
     if cbar:
-        plt.colorbar(im, location="right", shrink=0.8, label="Flux [e-/s]")
+        plt.colorbar(im, location="right", shrink=0.8, label="Flux [DN/s]")
     if marker is not None:
         ax.scatter(marker[1], marker[0], marker="x", c="deeppink", alpha=1, s=50)
 
@@ -1096,6 +1135,7 @@ def animate_cube(
     vmax: Optional[float] = None,
     cnorm: bool = False,
     suptitle: str = "",
+    cmap: str = "viridis",
 ):
     """
     Creates an animated visualization of a 3D image cube, with an optional aperture mask and
@@ -1191,6 +1231,7 @@ def animate_cube(
         vmin=vmin if not cnorm else None,
         vmax=vmax if not cnorm else None,
         cnorm=norm if cnorm else None,
+        cmap=cmap if cmap else None
     )
 
     # Define function for animation
@@ -1207,6 +1248,7 @@ def animate_cube(
             vmin=vmin if not cnorm else None,
             vmax=vmax if not cnorm else None,
             cnorm=norm if cnorm else None,
+            cmap=cmap if cmap else None
         )
 
         return ()
@@ -1226,3 +1268,473 @@ def animate_cube(
     )
 
     return ani
+
+
+def convert_l4_flux_to_l2(
+    flux_njy: Union[float, np.ndarray],
+    flux_err_njy: Optional[Union[float, np.ndarray]] = None,
+    meta: Optional[Union[Dict[str, Any], Any]] = None,
+    conversion_megajanskys: Optional[float] = None,
+    pixelarea_steradians: Optional[float] = None,
+) -> Union[
+    Union[float, np.ndarray], Tuple[Union[float, np.ndarray], Union[float, np.ndarray]]
+]:
+    """
+    Convert Roman L4 source catalog fluxes (in nJy) back to L2 image units (DN/s).
+
+    Parameters
+    ----------
+    flux_njy : float or array-like
+        Flux value(s) in nanojanskys (nJy), e.g. `psf_flux`, `segment_flux`,
+        or `aper*_flux` from a Roman L4 parquet/ASDF catalog.
+    flux_err_njy : float or array-like, optional
+        Uncertainty on the flux in nJy. If provided, it is scaled by the same factor.
+    meta : dict, astropy.table.Table, or asdf.AsdfFile, optional
+        Metadata container holding the Roman photometry header. Can be:
+        - The L4 catalog table (e.g. `table.meta['photometry']`)
+        - An L2 ASDF file/dict (e.g. `asdf_file.tree['roman']['meta']['photometry']`)
+        - A dictionary containing 'conversion_megajanskys' and 'pixelarea_steradians'
+    conversion_megajanskys : float, optional
+        Explicit conversion factor from DN/s to MJy/sr (overrides `meta`).
+    pixelarea_steradians : float, optional
+        Explicit average pixel solid angle in steradians (overrides `meta`).
+
+    Returns
+    -------
+    flux_dn_s : float or np.ndarray
+        Flux in L2 calibrated image units (DN/s), ready to scale a normalized ePSF model.
+    flux_err_dn_s : float or np.ndarray (optional)
+        Flux uncertainty in DN/s (only returned if `flux_err_njy` is provided).
+    """
+    # 1. Resolve conversion factors from metadata if not explicitly passed
+    c_mjy_sr = conversion_megajanskys
+    pix_sr = pixelarea_steradians
+    c_ujy_arcsec = None
+    pix_arcsec = None
+
+    if meta is not None:
+        phot = None
+        # Astropy Table metadata
+        if hasattr(meta, "meta") and isinstance(meta.meta, dict):
+            phot = meta.meta.get("photometry", meta.meta)
+        # ASDF / datamodel / dict
+        elif isinstance(meta, dict):
+            if "roman" in meta and "meta" in meta["roman"]:
+                phot = meta["roman"]["meta"].get("photometry", {})
+            elif "photometry" in meta:
+                phot = meta["photometry"]
+            else:
+                phot = meta
+
+        if phot is not None:
+            c_mjy_sr = c_mjy_sr or phot.get("conversion_megajanskys")
+            pix_sr = (
+                pix_sr or phot.get("pixelarea_steradians") or phot.get("pixel_area")
+            )
+            c_ujy_arcsec = phot.get("conversion_microjanskys")
+            pix_arcsec = phot.get("pixelarea_arcsecsq")
+
+    # 2. Compute conversion scale: 1 DN/s in nJy
+    if c_mjy_sr is not None and pix_sr is not None:
+        # 1 MJy = 1e15 nJy
+        njy_per_dn_s = float(c_mjy_sr) * float(pix_sr) * 1e15
+    elif c_ujy_arcsec is not None and pix_arcsec is not None:
+        # 1 uJy = 1e3 nJy
+        njy_per_dn_s = float(c_ujy_arcsec) * float(pix_arcsec) * 1e3
+    else:
+        # Nominal fallback for Roman WFI F146 if metadata is completely missing
+        # (c_mjy_sr ~ 0.24039 MJy/sr / (DN/s), pixel scale ~ 0.11"/pixel -> 2.808e-13 sr)
+        njy_per_dn_s = 67.509
+        print(
+            f"Warning: Photometry metadata not found. Using nominal F146 factor ({njy_per_dn_s:.3f} nJy / (DN/s))."
+        )
+
+    # 3. Perform inverse transformation: nJy -> DN/s
+    flux_dn_s = np.asarray(flux_njy, dtype=float) / njy_per_dn_s
+    if np.ndim(flux_njy) == 0:
+        flux_dn_s = float(flux_dn_s)
+
+    if flux_err_njy is not None:
+        flux_err_dn_s = np.asarray(flux_err_njy, dtype=float) / njy_per_dn_s
+        if np.ndim(flux_err_njy) == 0:
+            flux_err_dn_s = float(flux_err_dn_s)
+        return flux_dn_s, flux_err_dn_s
+
+    return flux_dn_s
+
+
+def convert_abmag_to_l2_flux(
+    ab_mag: Union[float, np.ndarray],
+    ab_mag_err: Optional[Union[float, np.ndarray]] = None,
+    meta: Optional[Union[Dict[str, Any], Any]] = None,
+    conversion_megajanskys: Optional[float] = None,
+    pixelarea_steradians: Optional[float] = None,
+) -> Union[
+    Union[float, np.ndarray], Tuple[Union[float, np.ndarray], Union[float, np.ndarray]]
+]:
+    """
+    Convert Roman AB magnitude(s) to L2 calibrated image flux (DN/s)
+    by converting AB mag -> nJy and calling convert_l4_flux_to_l2.
+    Parameters
+    ----------
+    ab_mag : float or array-like
+        AB magnitude value(s) (e.g. `kron_abmag`, `aper*_abmag`).
+    ab_mag_err : float or array-like, optional
+        Uncertainty on the AB magnitude.
+    meta : dict, astropy.table.Table, or asdf.AsdfFile, optional
+        Metadata container holding Roman photometry attributes.
+    conversion_megajanskys : float, optional
+        Explicit conversion factor from DN/s to MJy/sr (overrides meta).
+    pixelarea_steradians : float, optional
+        Explicit average pixel solid angle in steradians (overrides meta).
+    Returns
+    -------
+    flux_dn_s : float or np.ndarray
+        Flux in L2 calibrated image units (DN/s).
+    flux_err_dn_s : float or np.ndarray (optional)
+        Flux uncertainty in DN/s (only returned if `ab_mag_err` is provided).
+    """
+    mag_arr = np.asarray(ab_mag, dtype=float)
+    # 1. Convert AB magnitude to flux in nJy: F_nJy = 10^(-0.4 * (m - 31.40))
+    flux_njy = 10.0 ** (-0.4 * (mag_arr - 31.40))
+    # 2. Propagate magnitude uncertainty to flux uncertainty in nJy if provided:
+    #    sigma_F_nJy = F_nJy * (ln(10) / 2.5) * sigma_m
+    flux_err_njy = None
+    if ab_mag_err is not None:
+        err_arr = np.asarray(ab_mag_err, dtype=float)
+        flux_err_njy = flux_njy * (np.log(10.0) / 2.5) * err_arr
+    # 3. Delegate conversion (nJy -> DN/s) to convert_l4_flux_to_l2
+    return convert_l4_flux_to_l2(
+        flux_njy=flux_njy,
+        flux_err_njy=flux_err_njy,
+        meta=meta,
+        conversion_megajanskys=conversion_megajanskys,
+        pixelarea_steradians=pixelarea_steradians,
+    )
+
+
+def _extract_time_and_flux(
+    flux: np.ndarray,
+    time: Optional[np.ndarray] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Extract clean 1D time and flux arrays from numpy arrays.
+    Filters out non-finite (NaN/Inf) values and sorts chronologically by time.
+    """
+    f = np.asarray(flux, dtype=float).ravel()
+    if time is not None:
+        t = np.asarray(time, dtype=float).ravel()
+        if len(t) != len(f):
+            raise ValueError(
+                f"Length mismatch: time ({len(t)}) and flux ({len(f)}) must have the same length."
+            )
+    else:
+        t = np.arange(len(f), dtype=float)
+
+    valid = np.isfinite(t) & np.isfinite(f)
+    t = t[valid]
+    f = f[valid]
+
+    if len(t) > 1 and np.any(np.diff(t) < 0):
+        sort_idx = np.argsort(t)
+        t = t[sort_idx]
+        f = f[sort_idx]
+
+    return t, f
+
+
+def compute_p2p_scatter(
+    flux: np.ndarray,
+    time: Optional[np.ndarray] = None,
+    normalize: bool = False,
+    ppm: bool = False,
+) -> float:
+    r"""
+    Compute the point-to-point ($\sigma_{\text{P2P}}$) scatter of a light curve.
+
+    The point-to-point scatter is calculated using:
+    $$\sigma_{\text{P2P}} = \frac{1.4826}{\sqrt{2}} \text{MAD}(\Delta y)$$
+    where $\Delta y$ is the difference between consecutive points in the flux
+    or magnitude time-series, and $\text{MAD}(\Delta y)$ is the median absolute
+    deviation of $\Delta y$:
+    $$\text{MAD}(\Delta y) = \text{median}(|\Delta y - \text{median}(\Delta y)|)$$
+
+    Parameters
+    ----------
+    flux : np.ndarray
+        Flux or magnitude time-series array.
+    time : np.ndarray, optional
+        Time values corresponding to the cadences. If provided, observations are
+        sorted by time before computing consecutive differences.
+    normalize : bool, default=False
+        If True, normalize by the median flux (dimensionless relative scatter).
+    ppm : bool, default=False
+        If True, normalize by the median flux and express in parts-per-million (ppm).
+        Overrides `normalize`.
+
+    Returns
+    -------
+    p2p_scatter : float
+        Point-to-point scatter $\sigma_{\text{P2P}}$.
+    """
+    t, f = _extract_time_and_flux(flux, time)
+    if len(f) < 2:
+        return 0.0
+
+    diff_y = np.diff(f)
+    diff_y = diff_y[np.isfinite(diff_y)]
+    if len(diff_y) == 0:
+        return 0.0
+
+    mad = float(np.median(np.abs(diff_y - np.median(diff_y))))
+    sigma_p2p = (1.4826 / np.sqrt(2.0)) * mad
+
+    med = float(np.median(f))
+    if ppm:
+        norm = med if med != 0 else 1.0
+        return float((sigma_p2p / norm) * 1e6)
+    elif normalize:
+        norm = med if med != 0 else 1.0
+        return float(sigma_p2p / norm)
+
+    return float(sigma_p2p)
+
+
+def compute_rms(
+    flux: np.ndarray,
+    time: Optional[np.ndarray] = None,
+    normalize: bool = False,
+    ppm: bool = False,
+    sigma_clip: Optional[float] = None,
+) -> float:
+    """
+    Compute the root-mean-square (RMS) scatter of a light curve around its median.
+
+    Parameters
+    ----------
+    flux : np.ndarray
+        Flux or magnitude time-series array.
+    time : np.ndarray, optional
+        Time values corresponding to the cadences.
+    normalize : bool, default=False
+        If True, normalize by the median flux (dimensionless relative scatter).
+    ppm : bool, default=False
+        If True, normalize by the median flux and express in parts-per-million (ppm).
+        Overrides `normalize`.
+    sigma_clip : float, optional
+        If provided, clip outliers separated from the median by more than `sigma_clip`
+        times the robust standard deviation (1.4826 * MAD).
+
+    Returns
+    -------
+    rms : float
+        RMS scatter.
+    """
+    t, f = _extract_time_and_flux(flux, time)
+    if len(f) == 0:
+        return 0.0
+
+    if sigma_clip is not None and len(f) > 2:
+        med = np.median(f)
+        std_robust = 1.4826 * np.median(np.abs(f - med))
+        if std_robust > 0:
+            mask = np.abs(f - med) <= sigma_clip * std_robust
+            f = f[mask]
+
+    if len(f) == 0:
+        return 0.0
+
+    med = float(np.median(f))
+    rms = float(np.sqrt(np.mean((f - med) ** 2)))
+
+    if ppm:
+        norm = med if med != 0 else 1.0
+        return float((rms / norm) * 1e6)
+    elif normalize:
+        norm = med if med != 0 else 1.0
+        return float(rms / norm)
+
+    return float(rms)
+
+
+def compute_cdpp(
+    flux: np.ndarray,
+    time: Optional[np.ndarray] = None,
+    transit_duration: int = 13,
+    savgol_window: int = 101,
+    savgol_polyorder: int = 2,
+    sigma: float = 5.0,
+    niters: int = 3,
+) -> float:
+    """
+    Estimate the Combined Differential Photometric Precision (CDPP) metric
+    using the Savitzky-Golay (SG) proxy method implemented purely with NumPy and SciPy.
+
+    Parameters
+    ----------
+    flux : np.ndarray
+        Flux time-series array.
+    time : np.ndarray, optional
+        Time values corresponding to the cadences.
+    transit_duration : int, default=13
+        Transit duration in units of number of cadences (window size for running mean).
+    savgol_window : int, default=101
+        Width of Savitzky-Golay filter in cadences (must be odd).
+    savgol_polyorder : int, default=2
+        Polynomial order for Savitzky-Golay filter.
+    sigma : float, default=5.0
+        Outlier clipping threshold in standard deviations.
+    niters : int, default=3
+        Number of iterations for outlier rejection during Savitzky-Golay trend estimation.
+
+    Returns
+    -------
+    cdpp : float
+        CDPP noise metric in parts-per-million (ppm).
+    """
+    t, f = _extract_time_and_flux(flux, time)
+    n_pts = len(f)
+    if n_pts < 3:
+        return 0.0
+
+    # Ensure savgol_window is an odd integer <= n_pts and > savgol_polyorder
+    win = savgol_window
+    if win >= n_pts:
+        win = n_pts if n_pts % 2 == 1 else n_pts - 1
+    if win <= savgol_polyorder:
+        win = (
+            savgol_polyorder + 1
+            if (savgol_polyorder + 1) % 2 == 1
+            else savgol_polyorder + 2
+        )
+
+    # 1. Iterative Savitzky-Golay detrending
+    if n_pts > savgol_polyorder + 1 and win > savgol_polyorder:
+        f_work = f.copy()
+        mask = np.ones(n_pts, dtype=bool)
+        trend = np.full_like(f_work, np.median(f_work))
+        for _ in range(niters):
+            if np.sum(mask) >= win:
+                tr = savgol_filter(
+                    f_work[mask],
+                    window_length=win,
+                    polyorder=savgol_polyorder,
+                )
+                trend = np.interp(t, t[mask], tr)
+            else:
+                trend = np.full_like(
+                    f_work,
+                    np.median(f_work[mask]) if np.any(mask) else np.median(f_work),
+                )
+            res = f_work - trend
+            std_r = np.std(res[mask]) if np.any(mask) else 0.0
+            if std_r > 0:
+                mask = np.abs(res) <= 3.0 * std_r
+            else:
+                break
+    else:
+        trend = np.full_like(f, np.median(f))
+
+    # Guard against zero or negative trend values
+    trend_safe = np.where(trend > 0, trend, np.median(f))
+    detrended = f / trend_safe
+
+    # 2. Outlier rejection (sigma clipping on detrended series)
+    med = float(np.median(detrended))
+    std_out = float(np.std(detrended))
+    if std_out > 0:
+        clean_mask = np.abs(detrended - med) <= sigma * std_out
+        detrended_clean = detrended[clean_mask]
+    else:
+        detrended_clean = detrended
+
+    if len(detrended_clean) < 2:
+        return 0.0
+
+    # 3. Normalize in parts-per-million (ppm)
+    med_clean = float(np.median(detrended_clean))
+    norm_ppm = (detrended_clean / med_clean - 1.0) * 1e6
+
+    # 4. Running mean with window transit_duration
+    dur = min(transit_duration, len(norm_ppm))
+    if dur <= 1:
+        return float(np.std(norm_ppm))
+
+    cumsum = np.cumsum(np.insert(norm_ppm, 0, 0.0))
+    rm = (cumsum[dur:] - cumsum[:-dur]) / float(dur)
+    return float(np.std(rm))
+
+
+def compute_lightcurve_metrics(
+    flux: np.ndarray,
+    time: Optional[np.ndarray] = None,
+    transit_duration: int = 13,
+    savgol_window: int = 101,
+    savgol_polyorder: int = 2,
+    sigma: float = 5.0,
+    ppm: bool = True,
+    normalize: bool = True,
+) -> Dict[str, float]:
+    """
+    Compute comprehensive light curve precision metrics: CDPP, RMS, and point-to-point (P2P) scatter.
+
+    Parameters
+    ----------
+    flux : np.ndarray
+        Flux or magnitude time-series array.
+    time : np.ndarray, optional
+        Time values corresponding to the cadences.
+    transit_duration : int, default=13
+        Transit duration in units of number of cadences for CDPP computation.
+    savgol_window : int, default=101
+        Width of Savitzky-Golay filter in cadences for CDPP detrending.
+    savgol_polyorder : int, default=2
+        Polynomial order for Savitzky-Golay filter.
+    sigma : float, default=5.0
+        Outlier rejection threshold in standard deviations for CDPP and RMS.
+    ppm : bool, default=True
+        Whether to return metrics in parts-per-million (ppm). CDPP is always in ppm.
+    normalize : bool, default=True
+        Whether to normalize RMS and P2P scatter by median flux.
+
+    Returns
+    -------
+    metrics : dict of float
+        Dictionary containing:
+        - 'cdpp': CDPP noise metric in ppm
+        - 'rms': RMS scatter (in ppm if ppm=True, or relative/raw)
+        - 'p2p': Point-to-point scatter sigma_P2P (in ppm if ppm=True, or relative/raw)
+        - 'mad': Median absolute deviation of flux (in ppm if ppm=True, or relative/raw)
+    """
+    t, f = _extract_time_and_flux(flux, time)
+    cdpp_val = compute_cdpp(
+        f,
+        time=t,
+        transit_duration=transit_duration,
+        savgol_window=savgol_window,
+        savgol_polyorder=savgol_polyorder,
+        sigma=sigma,
+    )
+    rms_val = compute_rms(f, time=t, normalize=normalize, ppm=ppm, sigma_clip=sigma)
+    p2p_val = compute_p2p_scatter(f, time=t, normalize=normalize, ppm=ppm)
+
+    med = float(np.median(f)) if len(f) > 0 else 1.0
+    mad_val = float(np.median(np.abs(f - med))) if len(f) > 0 else 0.0
+    if ppm:
+        norm = med if med != 0 else 1.0
+        mad_val = float((mad_val / norm) * 1e6)
+    elif normalize:
+        norm = med if med != 0 else 1.0
+        mad_val = float(mad_val / norm)
+
+    return {
+        "cdpp": cdpp_val,
+        "rms": rms_val,
+        "p2p": p2p_val,
+        "mad": mad_val,
+    }
+
+
+# Alias for compute_lightcurve_metrics
+compute_precision_metrics = compute_lightcurve_metrics
+
