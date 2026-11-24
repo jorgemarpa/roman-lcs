@@ -201,6 +201,7 @@ class LCExtractor(Machine):
         self._mask_pixels()
         self.median_bkg = None
         self.bkg_pixel_mask = None
+        self._cached_pixel_coords = {}
         if quality_mask is None:
             self.quality_mask = np.zeros(len(time), dtype=int)
         else:
@@ -568,7 +569,7 @@ class LCExtractor(Machine):
         """
         Calculates pixel coordinates of sources for a given cadence.
         Supports both classic FITS WCS and APE 14 WCS (such as SlicedLowLevelWCS,
-        HighLevelWCSWrapper, or GWCS).
+        HighLevelWCSWrapper, or GWCS). Results are memoized for performance.
 
         Parameters
         ----------
@@ -580,12 +581,19 @@ class LCExtractor(Machine):
         row, col : np.ndarray
             Row and column pixel coordinates of the sources in the catalog.
         """
+        if hasattr(self, "_cached_pixel_coords") and self._cached_pixel_coords is not None:
+            if frame_index in self._cached_pixel_coords:
+                return self._cached_pixel_coords[frame_index]
+
         if self.WCSs is None:
             raise ValueError("WCS information is not available")
         wcs_obj = self.WCSs[frame_index]
         if hasattr(wcs_obj, "all_world2pix"):
             ROW, COL = wcs_obj.all_world2pix(self.sources.loc[:, ["ra", "dec"]].values, 0.0).T
-            return ROW, COL
+            res = (np.asarray(ROW), np.asarray(COL))
+            if hasattr(self, "_cached_pixel_coords") and self._cached_pixel_coords is not None:
+                self._cached_pixel_coords[frame_index] = res
+            return res
         elif hasattr(wcs_obj, "_gwcs"):
             wcs_obj = wcs_obj._gwcs
 
@@ -596,16 +604,32 @@ class LCExtractor(Machine):
             frame="icrs",
         )
         col_vals, row_vals = wcs_obj.world_to_pixel(coords)
-        return np.asarray(row_vals), np.asarray(col_vals)
+        res = (np.asarray(row_vals), np.asarray(col_vals))
+        if hasattr(self, "_cached_pixel_coords") and self._cached_pixel_coords is not None:
+            self._cached_pixel_coords[frame_index] = res
+        return res
+
+    def precompute_pixel_coordinates(self) -> None:
+        """
+        Precomputes and caches pixel coordinates for all cadences in the dataset.
+        """
+        if self.WCSs is None:
+            return
+        if not hasattr(self, "_cached_pixel_coords") or self._cached_pixel_coords is None:
+            self._cached_pixel_coords = {}
+        for tdx in range(self.nt):
+            self.pixel_coordinates(frame_index=tdx)
 
     def draw_scene(
         self,
         frame_index: int = 0,
         offset: Tuple[float, float] = (0.0, 0.0),
+        threshold: float = 1e-7,
     ) -> None:
         """
         Convenient function to make the scene model, optionally applying sub-pixel
         pointing offsets (offset_row, offset_col) in cutout pixel coordinates.
+        Supports fast local bounding-box evaluation with threshold clipping.
         """
         # check of prf interpolation model exist
         if not hasattr(self, "prf_model"):
@@ -630,16 +654,58 @@ class LCExtractor(Machine):
 
         # evaluate PRF at each source position with offset applied
         off_r, off_c = offset
-        scene_model = []
-        for sdx in range(self.nsources):
-            eval = self.prf_model.evaluate_from_position(
-                center=(srow_cutout[sdx] + off_r, scol_cutout[sdx] + off_c),
-                corner=(0, 0),
-                shape=self.image_shape,
-            )[-1]
-            eval = np.nan_to_num(eval, nan=0.0)
-            scene_model.append(eval.ravel())
-        self.scene_model = np.array(scene_model)
+        ny, nx = self.image_shape
+        npix = ny * nx
+
+        if hasattr(self.prf_model, "evaluate_local"):
+            row_inds = []
+            col_inds = []
+            vals = []
+            for sdx in range(self.nsources):
+                c_row = srow_cutout[sdx] + off_r
+                c_col = scol_cutout[sdx] + off_c
+                r_pix, c_pix, patch_vals = self.prf_model.evaluate_local(
+                    center=(c_row, c_col),
+                    shape=self.image_shape,
+                    corner=(0, 0),
+                    threshold=threshold,
+                )
+                if len(patch_vals) > 0:
+                    flat_pix = r_pix * nx + c_pix
+                    row_inds.append(np.full(len(patch_vals), sdx, dtype=int))
+                    col_inds.append(flat_pix)
+                    vals.append(patch_vals)
+
+            if len(vals) > 0:
+                row_inds = np.concatenate(row_inds)
+                col_inds = np.concatenate(col_inds)
+                vals = np.concatenate(vals)
+                self.scene_model_sparse = sparse.csr_matrix(
+                    (vals, (row_inds, col_inds)),
+                    shape=(self.nsources, npix),
+                    dtype=float,
+                )
+            else:
+                self.scene_model_sparse = sparse.csr_matrix(
+                    (self.nsources, npix), dtype=float
+                )
+            self.scene_model = self.scene_model_sparse.toarray()
+        else:
+            scene_model = []
+            for sdx in range(self.nsources):
+                eval = self.prf_model.evaluate_from_position(
+                    center=(srow_cutout[sdx] + off_r, scol_cutout[sdx] + off_c),
+                    corner=(0, 0),
+                    shape=self.image_shape,
+                )[-1]
+                eval = np.nan_to_num(eval, nan=0.0)
+                if threshold > 0:
+                    max_v = np.max(eval)
+                    if max_v > 0:
+                        eval[eval < threshold * max_v] = 0.0
+                scene_model.append(eval.ravel())
+            self.scene_model = np.array(scene_model)
+            self.scene_model_sparse = sparse.csr_matrix(self.scene_model)
         return
 
     def plot_prf_model(
@@ -1121,6 +1187,7 @@ class LCExtractor(Machine):
         fit_offsets: bool = False,
         offset_max_iter: int = 5,
         offset_threshold: float = 0.01,
+        solver_method: str = "cholesky",
     ) -> None:
         """
         Fits PRF photometry the given targets in the image accounting for backgronund
@@ -1207,7 +1274,7 @@ class LCExtractor(Machine):
             snr_bkg_flux = np.zeros((self.nt, n_targets))
             snr_bkg_flux_err = np.zeros((self.nt, n_targets))
             snr_ap_quality = np.zeros((self.nt, n_targets))
-            snr_masks = []
+            snr_masks = np.zeros((self.nt, n_targets, np.prod(self.image_shape)), dtype=bool)
 
             iso_ap_flux = np.zeros((self.nt, n_targets))
             iso_ap_flux_err = np.zeros((self.nt, n_targets))
@@ -1216,7 +1283,7 @@ class LCExtractor(Machine):
             iso_bkg_flux = np.zeros((self.nt, n_targets))
             iso_bkg_flux_err = np.zeros((self.nt, n_targets))
             iso_ap_quality = np.zeros((self.nt, n_targets))
-            iso_masks = []
+            iso_masks = np.zeros((self.nt, n_targets, np.prod(self.image_shape)), dtype=bool)
 
             circ_data = {}
             for r in radii:
@@ -1230,9 +1297,10 @@ class LCExtractor(Machine):
                     "bkg_flux": np.zeros((self.nt, n_targets)),
                     "bkg_flux_err": np.zeros((self.nt, n_targets)),
                     "quality": np.zeros((self.nt, n_targets)),
-                    "masks": [],
+                    "masks": np.zeros((self.nt, n_targets, np.prod(self.image_shape)), dtype=bool),
                 }
 
+        self.precompute_pixel_coordinates()
         self.draw_scene(frame_index=0)
         self._compute_aperture_cut()
         if do_aperture:
@@ -1269,7 +1337,7 @@ class LCExtractor(Machine):
                 last_w = None
                 for it in range(offset_max_iter):
                     self.draw_scene(frame_index=tdx, offset=(drow_acc, dcol_acc))
-                    mean_model = sparse.csr_matrix(self.scene_model)
+                    mean_model = getattr(self, "scene_model_sparse", sparse.csr_matrix(self.scene_model))
                     if len(targets) > 0:
                         targets_models = mean_model[targets]
                         bkg_star_indices = ~np.isin(self.sources.index.values, targets)
@@ -1295,6 +1363,7 @@ class LCExtractor(Machine):
                                 y_err=self.flux_err[tdx],
                                 errors=False,
                                 k=self.pixel_mask[tdx],
+                                method=solver_method,
                             )
                             w_stellar = w_init[:stellar_models.shape[0]]
                         except Exception:
@@ -1324,6 +1393,7 @@ class LCExtractor(Machine):
                             y_err=self.flux_err[tdx],
                             errors=True,
                             k=self.pixel_mask[tdx],
+                            method=solver_method,
                         )
                         if not np.all(np.isfinite(w)):
                             epoch_flag |= PRFFitFlag.NON_FINITE_WEIGHTS
@@ -1362,7 +1432,7 @@ class LCExtractor(Machine):
                 # update scene model due to pixel grid offsets
                 self.draw_scene(frame_index=tdx)
 
-            mean_model = sparse.csr_matrix(self.scene_model)
+            mean_model = getattr(self, "scene_model_sparse", sparse.csr_matrix(self.scene_model))
             if len(targets) > 0:
                 targets_models = mean_model[targets]
                 # get background stars PSF model
@@ -1390,6 +1460,7 @@ class LCExtractor(Machine):
                     y_err=self.flux_err[tdx],
                     errors=True,
                     k=self.pixel_mask[tdx],
+                    method=solver_method,
                 )
                 if not np.all(np.isfinite(w)):
                     epoch_flag |= PRFFitFlag.NON_FINITE_WEIGHTS
@@ -1472,7 +1543,7 @@ class LCExtractor(Machine):
                 snr_bkg_flux[tdx] = ap_flux[:, 6]
                 snr_bkg_flux_err[tdx] = ap_flux[:, 7]
                 snr_ap_quality[tdx] = ap_flux[:, 8]
-                snr_masks.append(snr_mask)
+                snr_masks[tdx] = snr_mask
 
                 # 2. Isophote aperture (uses self.prf_cut)
                 iso_flux, iso_mask = self._single_frame_aperture_photometry(
@@ -1487,7 +1558,7 @@ class LCExtractor(Machine):
                 iso_bkg_flux[tdx] = iso_flux[:, 6]
                 iso_bkg_flux_err[tdx] = iso_flux[:, 7]
                 iso_ap_quality[tdx] = iso_flux[:, 8]
-                iso_masks.append(iso_mask)
+                iso_masks[tdx] = iso_mask
 
                 # 3. Circular apertures
                 for r_key, cdict in circ_data.items():
@@ -1504,7 +1575,7 @@ class LCExtractor(Machine):
                     cdict["bkg_flux"][tdx] = c_flux[:, 6]
                     cdict["bkg_flux_err"][tdx] = c_flux[:, 7]
                     cdict["quality"][tdx] = c_flux[:, 8]
-                    cdict["masks"].append(c_mask)
+                    cdict["masks"][tdx] = c_mask
 
         self.scene_model_cube = scene_model
 
@@ -1527,8 +1598,8 @@ class LCExtractor(Machine):
             }
 
         if do_aperture:
-            snr_masks_arr = np.array(snr_masks)
-            iso_masks_arr = np.array(iso_masks)
+            snr_masks_arr = snr_masks
+            iso_masks_arr = iso_masks
             self.aperture_masks = snr_masks_arr
             for sdx, snum in enumerate(targets):
                 snr_flux_corr, snr_flux_err_corr = correct_aperture_flux(
@@ -1577,7 +1648,7 @@ class LCExtractor(Machine):
                 self.lcs[snum]["aperture_iso"] = iso_dict
 
                 for r_key, cdict in circ_data.items():
-                    cmasks_arr = np.array(cdict["masks"])
+                    cmasks_arr = cdict["masks"]
                     c_flux_corr, c_flux_err_corr = correct_aperture_flux(
                         flux=cdict["flux"][:, sdx],
                         flux_err=cdict["flux_err"][:, sdx],
@@ -1612,23 +1683,23 @@ class LCExtractor(Machine):
         elif isinstance(percentile_cut, (int, float, np.integer, np.floating)):
             percentile_cut = np.array([percentile_cut] * self.nsources)
 
-        cuts = []
-        for obj, per in zip(self.scene_model, percentile_cut):
+        cuts = np.zeros(self.nsources, dtype=float)
+        for s_idx, (obj, per) in enumerate(zip(self.scene_model, percentile_cut)):
             if hasattr(obj, "toarray"):
                 flat = obj.toarray().ravel()
             else:
                 flat = np.asarray(obj).ravel()
             valid = np.isfinite(flat) & (flat > 0)
             if not np.any(valid):
-                cuts.append(0.0)
+                cuts[s_idx] = 0.0
                 continue
             sorted_vals = np.sort(flat[valid])[::-1]
             cumsum = np.cumsum(sorted_vals)
             frac = per / 100.0 if per > 1.0 else per
             target = frac * cumsum[-1]
             idx = min(np.searchsorted(cumsum, target), len(sorted_vals) - 1)
-            cuts.append(sorted_vals[idx])
-        self.prf_cut = np.array(cuts)
+            cuts[s_idx] = sorted_vals[idx]
+        self.prf_cut = cuts
         return
 
     def _compute_snr_optimal_pixel_count(self) -> np.ndarray:
@@ -1638,7 +1709,7 @@ class LCExtractor(Machine):
         """
         median_error = np.nanmedian(self.flux_err, axis=0)
         sat_limit = getattr(self, "pixel_saturation_limit", 6e4)
-        pixel_counts = []
+        pixel_counts = np.zeros(self.nsources, dtype=int)
         for sdx in range(self.nsources):
             flux_est = (
                 float(self.source_flux_estimates[sdx])
@@ -1654,8 +1725,8 @@ class LCExtractor(Machine):
                 sat_flux=sat_limit,
                 plot=False,
             )
-            pixel_counts.append(int(mask.sum()))
-        self.snr_optimal_pixel_count = np.array(pixel_counts, dtype=int)
+            pixel_counts[sdx] = int(mask.sum())
+        self.snr_optimal_pixel_count = pixel_counts
         return self.snr_optimal_pixel_count
 
     def _compute_circular_aperture_mask(
@@ -1718,17 +1789,14 @@ class LCExtractor(Machine):
         if not hasattr(self, "snr_optimal_pixel_count"):
             self._compute_snr_optimal_pixel_count()
 
-        masks = []
+        masks = np.zeros((self.nsources, self.scene_model.shape[1]), dtype=bool)
         for sdx in range(self.nsources):
             n_opt = int(self.snr_optimal_pixel_count[sdx])
-            signal = self.scene_model[sdx]
-            flat_sig = np.asarray(signal).ravel()
+            flat_sig = np.asarray(self.scene_model[sdx]).ravel()
             n_opt = max(1, min(len(flat_sig), n_opt))
             top_indices = np.argpartition(-flat_sig, n_opt - 1)[:n_opt]
-            mask = np.zeros_like(flat_sig, dtype=bool)
-            mask[top_indices] = True
-            masks.append(mask)
-        return np.array(masks, dtype=bool)
+            masks[sdx, top_indices] = True
+        return masks
 
     def _measure_aperture_photometry(
         self,
@@ -1738,7 +1806,11 @@ class LCExtractor(Machine):
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Measures flux and aperture diagnostics for targets using the given aperture mask.
+        Vectorized with BLAS matrix products for speed.
         """
+        if len(targets) == 0:
+            return np.empty((0, 9)), np.empty((0, aperture_mask.shape[1]), dtype=bool)
+
         # combine aperture mask with pixel mask to remove bad pixels from aperture photometry
         if hasattr(self, "pixel_mask"):
             _aperture_mask = aperture_mask & self.pixel_mask[frame_index][None, :]
@@ -1759,27 +1831,28 @@ class LCExtractor(Machine):
             bkg_err = None
             flux_sub = self.flux[frame_index]
 
-        # sum flux, flux error, and background in the aperture
-        targets_ap_flux = []
-        targets_bkg = []
-        for ap in _aperture_mask[targets]:
-            f_val = flux_sub[ap].sum()
-            if bkg_err is not None:
-                err_val = np.sqrt(((self.flux_err[frame_index, ap] ** 2) + (bkg_err[ap] ** 2)).sum())
-            else:
-                err_val = np.sqrt((self.flux_err[frame_index, ap] ** 2).sum())
-            targets_ap_flux.append([f_val, err_val])
+        _aperture_mask_tar = _aperture_mask[targets].astype(float)
 
-            if bkg is not None:
-                b_val = bkg[ap].sum()
-                b_err = np.sqrt((bkg_err[ap] ** 2).sum()) if bkg_err is not None else 0.0
-            else:
-                b_val = 0.0
-                b_err = 0.0
-            targets_bkg.append([b_val, b_err])
+        # sum flux, flux error, and background in the aperture (vectorized)
+        f_vals = _aperture_mask_tar.dot(flux_sub)
+        if bkg_err is not None:
+            var_pix = (self.flux_err[frame_index] ** 2) + (bkg_err ** 2)
+            err_vals = np.sqrt(_aperture_mask_tar.dot(var_pix))
+        else:
+            err_vals = np.sqrt(_aperture_mask_tar.dot(self.flux_err[frame_index] ** 2))
+        targets_ap_flux = np.column_stack([f_vals, err_vals])
 
-        targets_ap_flux = np.array(targets_ap_flux)
-        targets_bkg = np.array(targets_bkg)
+        if bkg is not None:
+            b_vals = _aperture_mask_tar.dot(bkg)
+            b_err_vals = (
+                np.sqrt(_aperture_mask_tar.dot(bkg_err ** 2))
+                if bkg_err is not None
+                else np.zeros(len(targets))
+            )
+        else:
+            b_vals = np.zeros(len(targets))
+            b_err_vals = np.zeros(len(targets))
+        targets_bkg = np.column_stack([b_vals, b_err_vals])
 
         # compute aperture metrics
         flux_weights = (
@@ -1787,57 +1860,59 @@ class LCExtractor(Machine):
             if hasattr(self, "source_flux_estimates") and self.source_flux_estimates is not None
             else None
         )
-        flux_metrics = np.array(
+        scene_mod = getattr(self, "scene_model_sparse", self.scene_model)
+        flux_metrics = np.column_stack(
             [
-                compute_FLFRCSAP(self.scene_model, _aperture_mask)[targets],
+                compute_FLFRCSAP(scene_mod, _aperture_mask)[targets],
                 compute_CROWDSAP(
-                    self.scene_model,
+                    scene_mod,
                     _aperture_mask,
                     flux_weights=flux_weights,
                 )[targets],
             ]
-        ).T
-        # compute centroids using flux weighted average of pixel coordinates in the aperture
+        )
+
+        # compute centroids using flux weighted average of pixel coordinates in the aperture (vectorized)
         col_frame = self.column[frame_index]
         row_frame = self.row[frame_index]
         srow_nom, scol_nom = self.pixel_coordinates(frame_index=frame_index)
         corner_row = row_frame.min()
         corner_col = col_frame.min()
         if np.nanmean(srow_nom) < corner_row:
-            row_orig = srow_nom + corner_row
-            col_orig = scol_nom + corner_col
+            row_orig = srow_nom[targets] + corner_row
+            col_orig = scol_nom[targets] + corner_col
         else:
-            row_orig = srow_nom
-            col_orig = scol_nom
+            row_orig = srow_nom[targets]
+            col_orig = scol_nom[targets]
 
-        targets_centroid = []
-        for tar in targets:
-            tar_mask = _aperture_mask[tar]
-            if tar_mask.any():
-                w = np.clip(flux_sub[tar_mask], 0, None)
-                w_sum = np.nansum(w)
-                dcol_tar = col_frame[tar_mask] - col_orig[tar]
-                drow_tar = row_frame[tar_mask] - row_orig[tar]
-                if w_sum > 0:
-                    dc = np.average(dcol_tar, weights=w)
-                    dr = np.average(drow_tar, weights=w)
-                else:
-                    dc = np.nanmean(dcol_tar)
-                    dr = np.nanmean(drow_tar)
-            else:
-                dc, dr = np.nan, np.nan
-            targets_centroid.append([dc, dr])
-        targets_centroid = np.array(targets_centroid)
+        w_pix = np.clip(flux_sub, 0, None)
+        W = _aperture_mask_tar * w_pix[None, :]
+        w_sum = W.sum(axis=1)
+        mask_sum = _aperture_mask_tar.sum(axis=1)
+
+        dc = np.full(len(targets), np.nan)
+        dr = np.full(len(targets), np.nan)
+
+        valid_w = w_sum > 0
+        if np.any(valid_w):
+            dc[valid_w] = (W[valid_w].dot(col_frame) / w_sum[valid_w]) - col_orig[valid_w]
+            dr[valid_w] = (W[valid_w].dot(row_frame) / w_sum[valid_w]) - row_orig[valid_w]
+
+        unweighted = (~valid_w) & (mask_sum > 0)
+        if np.any(unweighted):
+            dc[unweighted] = (_aperture_mask_tar[unweighted].dot(col_frame) / mask_sum[unweighted]) - col_orig[unweighted]
+            dr[unweighted] = (_aperture_mask_tar[unweighted].dot(row_frame) / mask_sum[unweighted]) - row_orig[unweighted]
+
+        targets_centroid = np.column_stack([dc, dr])
 
         if hasattr(self, "pixel_mask"):
-            quality = np.array(
-                [(~self.pixel_mask[frame_index][aperture_mask[tar]]).sum() for tar in targets]
-            )
+            bad_pix = (~self.pixel_mask[frame_index]).astype(float)
+            quality = aperture_mask[targets].astype(float).dot(bad_pix)
         else:
             quality = np.zeros(len(targets))
 
         return (
-            np.hstack([targets_ap_flux, flux_metrics, targets_centroid, targets_bkg, quality[:, None]]),
+            np.column_stack([targets_ap_flux, flux_metrics, targets_centroid, targets_bkg, quality]),
             aperture_mask[targets],
         )
 

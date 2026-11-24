@@ -2,7 +2,7 @@
 Class to manage PSF loading and evaluation
 """
 import os
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 from astropy.io import fits
@@ -164,6 +164,80 @@ class RomanSimplePSF(object):
         #     eval = eval.T
 
         return dx + center[1], dy + center[0], eval
+
+    def evaluate_local(
+        self,
+        center: tuple[float, float] = (12.5, 12.5),
+        shape: tuple[int, int] = (25, 25),
+        corner: tuple[int, int] = (0, 0),
+        radius: Optional[float] = None,
+        threshold: float = 1e-7,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Evaluate PSF locally around center with threshold clipping.
+
+        Parameters
+        ----------
+        center : tuple of float
+            (row, col) center position in cutout coordinates.
+        shape : tuple of int
+            (ny, nx) shape of the overall image cutout.
+        corner : tuple of int, optional
+            (row_min, col_min) corner of the cutout.
+        radius : float, optional
+            Bounding box half-width in pixels. If None, derived from kernel footprint.
+        threshold : float, optional
+            Threshold clipping fraction relative to peak (default: 1e-7).
+
+        Returns
+        -------
+        r_pix, c_pix : ndarray
+            1D integer row and column pixel coordinates within the cutout.
+        vals : ndarray
+            1D array of non-zero PSF values at those pixels.
+        """
+        row_c, col_c = center
+        ny, nx = shape
+
+        if radius is None:
+            oversamp = getattr(self, "oversample_factor", 1)
+            radius = (max(self.prf.shape) / (2.0 * float(oversamp))) + 1.0
+
+        rmin = max(int(np.floor(row_c - radius)), corner[0])
+        rmax = min(int(np.ceil(row_c + radius)), corner[0] + ny - 1)
+        cmin = max(int(np.floor(col_c - radius)), corner[1])
+        cmax = min(int(np.ceil(col_c + radius)), corner[1] + nx - 1)
+
+        if rmin > rmax or cmin > cmax:
+            return np.empty(0, dtype=int), np.empty(0, dtype=int), np.empty(0, dtype=float)
+
+        dx = np.arange(cmin, cmax + 1, dtype=float) - col_c
+        dy = np.arange(rmin, rmax + 1, dtype=float) - row_c
+        dx_grid, dy_grid = np.meshgrid(dx, dy, indexing="xy")
+
+        try:
+            eval_patch = self.interp_func((dy_grid, dx_grid))
+        except (ValueError, IndexError):
+            eval_patch = np.zeros_like(dx_grid)
+        eval_patch = np.nan_to_num(eval_patch, nan=0.0)
+
+        if threshold > 0:
+            max_v = np.max(eval_patch)
+            if max_v > 0:
+                eval_patch[eval_patch < threshold * max_v] = 0.0
+            else:
+                eval_patch[:] = 0.0
+
+        r_mesh, c_mesh = np.meshgrid(
+            np.arange(rmin, rmax + 1, dtype=int),
+            np.arange(cmin, cmax + 1, dtype=int),
+            indexing="ij",
+        )
+        nonzero = eval_patch > 0
+        if not np.any(nonzero):
+            return np.empty(0, dtype=int), np.empty(0, dtype=int), np.empty(0, dtype=float)
+
+        return r_mesh[nonzero], c_mesh[nonzero], eval_patch[nonzero]
 
     def evaluate_from_array(self, dx: np.ndarray, dy: np.ndarray):
         """
@@ -329,6 +403,81 @@ class PhotutilsPSFAdapter:
         dx_grid, dy_grid = np.meshgrid(dx, dy, indexing="xy")
         eval_stamp = self.epsf.evaluate(dx_grid, dy_grid, flux=1.0, x_0=0.0, y_0=0.0)
         return dx_grid + col_c, dy_grid + row_c, eval_stamp
+
+    def evaluate_local(
+        self,
+        center: Tuple[float, float],
+        shape: Tuple[int, int],
+        corner: Tuple[int, int] = (0, 0),
+        radius: Optional[float] = None,
+        threshold: float = 1e-7,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Evaluates ePSF locally around center with threshold clipping.
+
+        Parameters
+        ----------
+        center : tuple of float
+            (row, col) center position in cutout coordinates.
+        shape : tuple of int
+            (ny, nx) shape of the overall image cutout.
+        corner : tuple of int, optional
+            (row_min, col_min) corner of the cutout.
+        radius : float, optional
+            Bounding box half-width in pixels. If None, derived from kernel footprint.
+        threshold : float, optional
+            Threshold clipping fraction relative to peak (default: 1e-7).
+
+        Returns
+        -------
+        r_pix, c_pix : ndarray
+            1D integer row and column pixel coordinates within the cutout.
+        vals : ndarray
+            1D array of non-zero ePSF values at those pixels.
+        """
+        row_c, col_c = center
+        ny, nx = shape
+
+        if radius is None:
+            oversamp = getattr(self.epsf, "oversampling", (1, 1))
+            oversamp_val = oversamp[0] if hasattr(oversamp, "__len__") else oversamp
+            if hasattr(self.epsf, "data"):
+                radius = (max(self.epsf.data.shape) / (2.0 * float(oversamp_val))) + 1.0
+            else:
+                radius = 15.0
+
+        rmin = max(int(np.floor(row_c - radius)), corner[0])
+        rmax = min(int(np.ceil(row_c + radius)), corner[0] + ny - 1)
+        cmin = max(int(np.floor(col_c - radius)), corner[1])
+        cmax = min(int(np.ceil(col_c + radius)), corner[1] + nx - 1)
+
+        if rmin > rmax or cmin > cmax:
+            return np.empty(0, dtype=int), np.empty(0, dtype=int), np.empty(0, dtype=float)
+
+        dx = np.arange(cmin, cmax + 1, dtype=float) - col_c
+        dy = np.arange(rmin, rmax + 1, dtype=float) - row_c
+        dx_grid, dy_grid = np.meshgrid(dx, dy, indexing="xy")
+
+        eval_patch = self.epsf.evaluate(dx_grid, dy_grid, flux=1.0, x_0=0.0, y_0=0.0)
+        eval_patch = np.nan_to_num(eval_patch, nan=0.0)
+
+        if threshold > 0:
+            max_v = np.max(eval_patch)
+            if max_v > 0:
+                eval_patch[eval_patch < threshold * max_v] = 0.0
+            else:
+                eval_patch[:] = 0.0
+
+        r_mesh, c_mesh = np.meshgrid(
+            np.arange(rmin, rmax + 1, dtype=int),
+            np.arange(cmin, cmax + 1, dtype=int),
+            indexing="ij",
+        )
+        nonzero = eval_patch > 0
+        if not np.any(nonzero):
+            return np.empty(0, dtype=int), np.empty(0, dtype=int), np.empty(0, dtype=float)
+
+        return r_mesh[nonzero], c_mesh[nonzero], eval_patch[nonzero]
 
     def evaluate_from_array(self, dcol, drow):
         """Evaluates ePSF for 1D or 2D coordinate offsets."""

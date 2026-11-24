@@ -16,6 +16,7 @@ from astropy.io import fits
 from astropy.visualization import simple_norm
 from matplotlib import animation, colors, patches
 from patsy import dmatrix
+from scipy import linalg as scipy_linalg
 from scipy import optimize, sparse
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import savgol_filter
@@ -260,6 +261,7 @@ def solve_linear_model(
     k: Optional[npt.ArrayLike] = None,
     errors: bool = False,
     nnls: bool = False,
+    method: str = "cholesky",
 ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
     """
     Solves a linear model with design matrix A and observations y:
@@ -291,6 +293,12 @@ def solve_linear_model(
         shape n_observations
     errors: boolean
         Whether to return error estimates of the best fitting weights
+    nnls: boolean, optional
+        Whether to use non-negative least squares
+    method: str, optional
+        Linear solver method to use: 'cholesky' (default, fast for SPD systems)
+        or 'lu' (standard LU decomposition via np.linalg.solve). If Cholesky
+        fails due to ill-conditioning, it will automatically fall back to LU.
 
     Returns
     -------
@@ -325,13 +333,42 @@ def solve_linear_model(
             sigma_w_inv,
             B,
         )
-    else:
-        # w, _, _, _ = np.linalg.lstsq(sigma_w_inv, B)
+        if errors is True:
+            w_err = np.linalg.inv(sigma_w_inv).diagonal() ** 0.5
+            return w, w_err
+        return w
+
+    if method == "cholesky":
+        try:
+            c, low = scipy_linalg.cho_factor(sigma_w_inv, lower=True, check_finite=False)
+            w = scipy_linalg.cho_solve((c, low), B, check_finite=False)
+            if errors is True:
+                # Diagonal of inv(sigma_w_inv) = (L L^T)^-1 = L^-T L^-1
+                # L_inv = solve_triangular(c, I, lower=True)
+                # diag = sum(L_inv**2, axis=0)
+                n_dim = sigma_w_inv.shape[0]
+                L_inv = scipy_linalg.solve_triangular(
+                    c, np.eye(n_dim), lower=True, check_finite=False
+                )
+                diag_var = np.sum(L_inv**2, axis=0)
+                w_err = np.sqrt(np.maximum(diag_var, 0.0))
+                return w, w_err
+            return w
+        except (scipy_linalg.LinAlgError, np.linalg.LinAlgError, ValueError):
+            # Gracefully fall back to LU if matrix is non-positive-definite
+            w = np.linalg.solve(sigma_w_inv, B)
+            if errors is True:
+                w_err = np.linalg.inv(sigma_w_inv).diagonal() ** 0.5
+                return w, w_err
+            return w
+    elif method == "lu":
         w = np.linalg.solve(sigma_w_inv, B)
-    if errors is True:
-        w_err = np.linalg.inv(sigma_w_inv).diagonal() ** 0.5
-        return w, w_err
-    return w
+        if errors is True:
+            w_err = np.linalg.inv(sigma_w_inv).diagonal() ** 0.5
+            return w, w_err
+        return w
+    else:
+        raise ValueError(f"Unknown solver method '{method}', expected 'cholesky' or 'lu'")
 
 
 def sparse_lessthan(
