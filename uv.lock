@@ -3907,7 +3907,7 @@ wheels = [
 [[package]]
 name = "roman-cuts"
 version = "1.0.0"
-source = { editable = "../roman-cuts" }
+source = { git = "https://github.com/jorgemarpa/roman-cuts.git?branch=chore%2Fuv-cleanup#b3a0f80a298fcba00dd757e164402e9ecd80abbe" }
 dependencies = [
     { name = "asdf-astropy" },
     { name = "astropy" },
@@ -3927,43 +3927,6 @@ com = [
     { name = "python-dotenv" },
     { name = "roman-datamodels" },
     { name = "s3fs" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "asdf-astropy", specifier = ">=0.7" },
-    { name = "astropy", specifier = ">5,<8" },
-    { name = "astroquery", marker = "extra == 'all'", git = "https://github.com/astropy/astroquery.git?rev=refs%2Fpull%2F3593%2Fhead" },
-    { name = "astroquery", marker = "extra == 'com'", git = "https://github.com/astropy/astroquery.git?rev=refs%2Fpull%2F3593%2Fhead" },
-    { name = "boto3", marker = "extra == 'all'", specifier = ">=1.42.0" },
-    { name = "boto3", marker = "extra == 'com'", specifier = ">=1.42.0" },
-    { name = "fsspec", marker = "extra == 'all'", specifier = ">=2024.1.0" },
-    { name = "fsspec", marker = "extra == 'com'", specifier = ">=2024.1.0" },
-    { name = "matplotlib", specifier = ">=3.10.1,<4.0" },
-    { name = "numpy", specifier = ">=1.26,<2.5" },
-    { name = "pandas", specifier = ">1.5,<3.0" },
-    { name = "pyarrow", marker = "extra == 'all'", specifier = ">=14.0" },
-    { name = "pyarrow", marker = "extra == 'com'", specifier = ">=14.0" },
-    { name = "python-dotenv", marker = "extra == 'all'", specifier = ">=1.0.0" },
-    { name = "python-dotenv", marker = "extra == 'com'", specifier = ">=1.0.0" },
-    { name = "roman-datamodels", marker = "extra == 'all'", specifier = ">=1.0.0,<2.0" },
-    { name = "roman-datamodels", marker = "extra == 'com'", specifier = ">=1.0.0,<2.0" },
-    { name = "s3fs", marker = "extra == 'all'", specifier = ">=2025.9.0" },
-    { name = "s3fs", marker = "extra == 'com'", specifier = ">=2025.9.0" },
-    { name = "tqdm", specifier = ">=4.67.1,<5.0" },
-]
-provides-extras = ["com", "all"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "mkdocs", specifier = ">=1.6.0,<2.0" },
-    { name = "mkdocs-jupyter", specifier = ">=0.25.1,<0.26" },
-    { name = "mkdocs-material", specifier = ">=9.5.0,<10.0" },
-    { name = "mkdocstrings", extras = ["python"], specifier = ">=0.29.0,<0.30" },
-    { name = "mypy", specifier = ">=1.15.0,<2.0" },
-    { name = "pymdown-extensions", specifier = "<10.15" },
-    { name = "pytest", specifier = ">=8.0.0,<9.0" },
-    { name = "ruff", specifier = ">=0.11.0,<0.12" },
 ]
 
 [[package]]
@@ -3991,7 +3954,7 @@ wheels = [
 [[package]]
 name = "roman-epsf"
 version = "0.1.0"
-source = { editable = "../roman-epsf" }
+source = { git = "https://github.com/jorgemarpa/roman-epsf.git?branch=chore%2Fuv-cleanup#e349d3b2513e2cff39e5d81dc4f5908c4fa4e8e8" }
 dependencies = [
     { name = "astropy" },
     { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -4002,31 +3965,6 @@ dependencies = [
     { name = "roman-cuts", extra = ["com"] },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "astropy", specifier = ">5,<8" },
-    { name = "numpy", specifier = ">=1.26,<2.5" },
-    { name = "pandas", specifier = ">1.5,<3.0" },
-    { name = "photutils", specifier = ">=2.0" },
-    { name = "roman-cuts", extras = ["com"], editable = "../roman-cuts" },
-    { name = "roman-datamodels", marker = "extra == 'all'", specifier = ">=1.0.0,<2.0" },
-    { name = "roman-datamodels", marker = "extra == 'dq'", specifier = ">=1.0.0,<2.0" },
-    { name = "scipy", specifier = ">=1.10" },
-]
-provides-extras = ["dq", "all"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "mkdocs", specifier = ">=1.6.0,<2.0" },
-    { name = "mkdocs-jupyter", specifier = ">=0.25.1,<0.26" },
-    { name = "mkdocs-material", specifier = ">=9.5.0,<10.0" },
-    { name = "mkdocstrings", extras = ["python"], specifier = ">=0.29.0,<0.30" },
-    { name = "mypy", specifier = ">=1.15.0,<2.0" },
-    { name = "pymdown-extensions", specifier = "<10.15" },
-    { name = "pytest", specifier = ">=8.0.0,<9.0" },
-    { name = "ruff", specifier = ">=0.11.0,<0.12" },
 ]
 
 [[package]]
@@ -4073,9 +4011,9 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.26,<2.5" },
     { name = "pandas", specifier = ">1.5,<3.0" },
     { name = "patsy", specifier = ">=0.5.1" },
-    { name = "roman-cuts", extras = ["com"], editable = "../roman-cuts" },
+    { name = "roman-cuts", extras = ["com"], git = "https://github.com/jorgemarpa/roman-cuts.git?branch=chore%2Fuv-cleanup" },
     { name = "roman-datamodels", specifier = ">=1.0.0,<2.0" },
-    { name = "roman-epsf", editable = "../roman-epsf" },
+    { name = "roman-epsf", git = "https://github.com/jorgemarpa/roman-epsf.git?branch=chore%2Fuv-cleanup" },
     { name = "scipy", specifier = ">=1.10" },
     { name = "stpsf", specifier = ">=2.2.0" },
     { name = "tqdm", specifier = ">=4.67.1,<5.0" },
