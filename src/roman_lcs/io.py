@@ -9,8 +9,8 @@ import logging
 import os
 from typing import Any, Dict, Optional, Tuple, Union
 
-from astropy.io import fits
 import numpy as np
+from astropy.io import fits
 
 try:
     import s3fs
@@ -18,7 +18,6 @@ except ImportError:
     s3fs = None
 
 from . import __version__
-from .aperture import correct_aperture_flux
 from .utils import compute_lightcurve_metrics
 
 log = logging.getLogger(__name__)
@@ -344,10 +343,8 @@ def write_lightcurve_fits(
         # Compute precision metrics for aperture light curve
         if "flux_corr" in ap_dict and np.any(np.isfinite(ap_dict["flux_corr"])):
             target_flux = np.asarray(ap_dict["flux_corr"], dtype=np.float64)
-            flux_type = "corrected"
         elif "flux" in ap_dict and np.any(np.isfinite(ap_dict["flux"])):
             target_flux = np.asarray(ap_dict["flux"], dtype=np.float64)
-            flux_type = "raw"
         else:
             target_flux = None
 

@@ -15,7 +15,7 @@ from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.stats import sigma_clip
 from astropy.visualization import simple_norm
-from astropy.wcs.wcsapi import HighLevelWCSWrapper, SlicedLowLevelWCS
+from astropy.wcs.wcsapi import HighLevelWCSWrapper
 from astropy.wcs.wcsapi.wrappers.base import BaseWCSWrapper
 from roman_cuts import RomanCuts
 from scipy import ndimage, sparse
@@ -287,10 +287,7 @@ class LCExtractor(Machine):
         fname : str or list of strings
             File name or list of file names of the FFI files.
         cutout_size : int, optional
-            Size of the cutout in , assumed to be squared
-        cutout_origin : tuple of ints
-            Origin pixel coordinates where to start the cut out. The cutout will be
-            centered in `cutout_origin + cutout_size / 2`. Follows matrix indexing.
+            Size of the cutout in pixels, assumed to be squared.
         cutout_center : tuple of floats, optional
             Center of the cutout in RA, Dec coordinates. If provided, the cutout will be
             centered on this position and the pixel grid will be adjusted to account for
@@ -1352,7 +1349,6 @@ class LCExtractor(Machine):
                     dcol_acc += step_c
 
                     last_w = w
-                    last_werr = werr
 
                     if max(abs(delta_r), abs(delta_c)) < offset_threshold:
                         converged = True

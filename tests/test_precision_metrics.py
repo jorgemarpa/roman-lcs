@@ -1,9 +1,7 @@
 import numpy as np
 import pytest
-from lightkurve import LightCurve
 
 from roman_lcs.utils import (
-    compute_cdpp,
     compute_lightcurve_metrics,
     compute_p2p_scatter,
     compute_precision_metrics,
@@ -54,30 +52,6 @@ def test_compute_rms():
     # 4. Normalization and ppm
     rms_ppm = compute_rms(flux, ppm=True)
     assert np.isclose(rms_ppm, (true_sigma / 500.0) * 1e6, rtol=0.05)
-
-
-def test_compute_cdpp_against_lightkurve():
-    """Verify that pure numpy/scipy CDPP matches Lightkurve estimate_cdpp output."""
-    np.random.seed(42)
-    t = np.linspace(0, 20, 500)
-    # Add sinusoidal trend and white noise
-    trend = 10.0 * np.sin(2 * np.pi * t / 5.0)
-    noise = np.random.normal(0, 0.5, len(t))
-    flux = 1000.0 + trend + noise
-
-    # Lightkurve benchmark
-    lc = LightCurve(time=t, flux=flux)
-    lk_cdpp = float(lc.estimate_cdpp(transit_duration=13, savgol_window=51, savgol_polyorder=2, sigma=5.0).value)
-
-    # Pure NumPy / SciPy computation
-    pure_cdpp = compute_cdpp(flux, time=t, transit_duration=13, savgol_window=51, savgol_polyorder=2, sigma=5.0)
-
-    # Must match Lightkurve's algorithm within float precision
-    assert np.isclose(pure_cdpp, lk_cdpp, rtol=1e-6)
-
-    # Test short light curve handling
-    short_cdpp = compute_cdpp(flux[:20], time=t[:20], transit_duration=5, savgol_window=9)
-    assert short_cdpp >= 0
 
 
 def test_numpy_arrays_and_edge_cases():

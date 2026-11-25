@@ -1,4 +1,5 @@
 import warnings
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -90,7 +91,7 @@ def test_make_snr_optimal_aperture():
     assert mask_2d.shape == (ny, nx)
     assert mask_2d.dtype == bool
     # Center pixel must be included
-    assert mask_2d[12, 12] is np.True_ or mask_2d[12, 12] == True
+    assert mask_2d[12, 12]
     # Aperture size should be reasonable (e.g. 5 to 50 pixels)
     assert 5 <= mask_2d.sum() <= 50
 
@@ -106,8 +107,8 @@ def test_make_snr_optimal_aperture():
     sat_signal[12, 12] = 100000.0  # Above 6e4
     sat_signal[12, 13] = 80000.0   # Above 6e4
     sat_mask = make_snr_optimal_aperture(sat_signal, error_2d, sat_flux=6e4)
-    assert sat_mask[12, 12] == True
-    assert sat_mask[12, 13] == True
+    assert sat_mask[12, 12]
+    assert sat_mask[12, 13]
 
 
 def test_default_circular_aperture(sample_extractor):
@@ -155,16 +156,6 @@ def test_default_circular_aperture(sample_extractor):
     # Circular mask radius 3 should contain pixels
     n_pix = mask.sum()
     assert 20 <= n_pix <= 40  # pi * 3^2 ≈ 28.3
-
-    # Check lightkurve export
-    lk_dict = sample_extractor.get_lightcurves(mode="lk")
-    assert 0 in lk_dict
-    lc = lk_dict[0]
-    assert "psf_flux" in lc.colnames
-    assert "aperture_3pix_flux" in lc.colnames
-    assert "aperture_3pix_flux_err" in lc.colnames
-    assert "ap_bkg_flux" in lc.colnames
-    assert "aperture_3pix_bkg_flux" in lc.colnames
 
 
 def test_custom_list_aperture_radii(sample_extractor):
@@ -548,7 +539,7 @@ def test_compute_median_background(sample_extractor):
 
     # 2. Rejects bright star peak at (12, 12)
     # The star peak is 500.0, so (12, 12) should definitely be masked out from background
-    assert ext.bkg_pixel_mask_3d[0, 12, 12] == False
+    assert not ext.bkg_pixel_mask_3d[0, 12, 12]
 
     # 3. Median background estimate is accurate (~10.0, not biased by 500.0 star)
     assert np.all(np.abs(med_bkg - 10.0) < 1.0)

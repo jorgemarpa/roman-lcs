@@ -12,14 +12,11 @@ Processes a batch of targets simultaneously:
 """
 
 import argparse
-import datetime
-import glob
 import logging
 import os
-import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Union
 
 # Enforce strict single-threaded execution per worker before importing numpy/scipy
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -29,17 +26,14 @@ os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 import astropy.units as u
-from astropy.coordinates import SkyCoord
-from astropy.io import fits
 import numpy as np
 import pandas as pd
-
-from roman_cuts.com import make_cutout, query_mast_files
+from astropy.coordinates import SkyCoord
+from roman_cuts.com import make_cutout
 from roman_cuts.com.io import _open_asdf
 from roman_epsf import load_epsf
 
 from roman_lcs import LCExtractor, PhotutilsPSFAdapter
-from roman_lcs.io import write_lightcurve_fits
 from roman_lcs.scripts.extract_lightcurve import (
     GWCSAdapter,
     find_catalog,

@@ -1,17 +1,17 @@
 import os
 import tempfile
+
 import numpy as np
 import pytest
 from astropy.io import fits
 
 from roman_lcs.io import (
-    format_aperture_col_prefix,
-    write_lightcurve_fits,
-    read_lightcurve_fits,
     _get_short_aperture_id,
+    format_aperture_col_prefix,
+    read_lightcurve_fits,
+    write_lightcurve_fits,
 )
-from roman_lcs.scripts.extract_lightcurve import parse_args, normalize_detector
-from tests.test_aperture_photometry import sample_extractor, DummyPRF
+from roman_lcs.scripts.extract_lightcurve import normalize_detector, parse_args
 
 
 def test_format_aperture_helpers():
@@ -92,7 +92,7 @@ def test_write_and_read_lightcurve_fits_roundtrip():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         out_fits = os.path.join(tmpdir, "test_lc.fits")
-        hdul = write_lightcurve_fits(
+        write_lightcurve_fits(
             lcs=lcs,
             output_path=out_fits,
             meta=meta,
@@ -230,7 +230,7 @@ def test_extractor_to_fits(sample_extractor):
             "EPSFFILE": "roman_epsf_pid1055_wfi02_f146_global.fits",
             "CATFILE": "01055_sca02_clean_export.csv",
         }
-        hdul = sample_extractor.to_fits(target=0, path=out_fits, extra_meta=extra_meta)
+        sample_extractor.to_fits(target=0, path=out_fits, extra_meta=extra_meta)
         assert os.path.isfile(out_fits)
 
         read_lcs, hdr = read_lightcurve_fits(out_fits)
@@ -388,7 +388,7 @@ def test_extractor_to_fits_s3(sample_extractor):
     )
 
     s3_key = "lightcurves/extractor_target0.fits"
-    hdul = sample_extractor.to_fits(
+    sample_extractor.to_fits(
         target=0,
         path=s3_key,
         to_s3=True,

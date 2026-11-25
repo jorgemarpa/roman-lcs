@@ -12,7 +12,7 @@ PACKAGEDIR = os.path.abspath(os.path.dirname(__file__))
 from .lc_extractor import LCExtractor, PRFFitFlag  # noqa
 from .machine import Machine  # noqa
 from .prf import PhotutilsPSFAdapter  # noqa
-from .utils import compute_lightcurve_metrics
+from .utils import compute_lightcurve_metrics  # noqa: E402
 
 __all__ = [
     "LCExtractor",

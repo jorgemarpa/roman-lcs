@@ -1,42 +1,41 @@
-.PHONY: all clean pytest coverage flake8 black mypy isort
+.PHONY: all clean pytest mypy ruff-check ruff-check-fix ruff-format build serve deploy
 
-CMD:=poetry run
+CMD:=uv run
 PYMODULE:=src
 TESTS:=tests
 
 # Run all the checks which do not change files
-all: pytest mypy ruff-check ruff-check-fix ruff-format build serve deploy
+all: ruff-check mypy pytest build
 
-# Run the unit tests using `pytest`
+# Run unit tests using pytest
 pytest:
 	$(CMD) pytest $(PYMODULE) $(TESTS)
 
-# Generate a unit test coverage report using `pytest-cov`
-coverage:
-	$(CMD) pytest --cov=$(PYMODULE) $(TESTS) --cov-report html
-
-# Run the unit tests using `pytest`
+# Type check using mypy
 mypy:
 	$(CMD) mypy $(PYMODULE)
 
-# Ruff 
+# Ruff check
 ruff-check:
 	$(CMD) ruff check $(PYMODULE) $(TESTS)
 
-# Ruff 
+# Ruff check with fix
 ruff-check-fix:
 	$(CMD) ruff check --fix $(PYMODULE) $(TESTS)
 
-# Ruff 
+# Ruff format
 ruff-format:
 	$(CMD) ruff format $(PYMODULE) $(TESTS)
 
-# build docs
+# Build docs
 build:
-	$(CMD) mkdocs build
+	$(CMD) mkdocs build --strict
 
 serve:
 	$(CMD) mkdocs serve
 
 deploy:
 	$(CMD) mkdocs gh-deploy --force
+
+clean:
+	rm -rf dist site .pytest_cache .mypy_cache .ruff_cache

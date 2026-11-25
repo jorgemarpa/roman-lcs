@@ -683,7 +683,7 @@ def bspline_smooth(
         Do the splines per segments with splits computed from data `x` or given in `breaks`.
     breaks : list of ints
         List of break indexes in `y`.
-    nknots : int
+    n_knots : int
         Number of knots for the B-Spline. If `do_segments` is True, knots will be
         distributed in each segment.
 
@@ -795,8 +795,7 @@ def to_fits(
     def _header_template(extension):
         """Returns a template `fits.Header` object for a given extension."""
         template_fn = os.path.join(
-            os.path.dirname(os.path.dirname(PACKAGEDIR)),
-            "data",
+            PACKAGEDIR,
             "templates",
             f"lc-ext{extension}-header.txt",
         )
@@ -925,8 +924,6 @@ def clean_blends_in_catalog(
         The input catalog DataFrame containing 'ra' and 'dec' columns.
     blend_limit : float
         The distance limit in arcseconds to consider a source as a blend.
-    remove : str
-        The type of sources to remove. Options are 'faint' or 'bright'.
 
     Returns
     -------

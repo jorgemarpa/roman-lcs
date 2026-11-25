@@ -1,9 +1,9 @@
+import matplotlib
 import numpy as np
 import pandas as pd
-import pytest
-from astropy.wcs.wcsapi import HighLevelWCSWrapper, SlicedLowLevelWCS
 from astropy.wcs import WCS
-import matplotlib
+from astropy.wcs.wcsapi import HighLevelWCSWrapper, SlicedLowLevelWCS
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 

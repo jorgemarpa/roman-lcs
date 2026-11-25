@@ -26,3 +26,6 @@ data/ePSF_lib/*
 data/prf_models/roman_WFI_rampfitted_F146_3_SCA02_*.fits
 .vscode/settings.json
 src/roman_lcs/scripts/__pycache__
+
+# uv
+.venv/
