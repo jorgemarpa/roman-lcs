@@ -6,15 +6,28 @@
 
 # roman-lcs
 
-`roman-lcs` is a Python package designed for precision Pixel Response Function (PRF) and aperture photometry on time-series observations from the **Nancy Grace Roman Space Telescope Wide Field Instrument (WFI)**. Developed as part of the TRExS (Transiting and Relativistic Exoplanet Search) project, it provides high-throughput photometry pipelines, background subtraction, crowding metrics, and light curve extraction for both simulated Roman data and Roman Commissioning (ROMCOM) observations.
+`roman-lcs` is a Python package designed for precision Pixel Response Function (PRF) and aperture photometry on time-series observations from the **Nancy Grace Roman Space Telescope Wide Field Instrument (WFI)**. Developed as part of the TRExS (Transiting and Relativistic Exoplanet Search) project, it provides high-throughput photometry pipelines, local background subtraction, crowding metrics, and light curve extraction for both simulated and in-flight Roman observations.
 
 ---
 
 ## About NASA Roman & the Galactic Bulge Time Domain Survey
 
-The **Nancy Grace Roman Space Telescope** is NASA's next-generation flagship observatory, providing Hubble-quality spatial resolution over a field of view ~100 times larger (0.281 deg²) via its 300-megapixel **Wide Field Instrument (WFI)**. Roman will operate in the near-infrared (~0.5–2.0 $\mu$m) from Sun-Earth L2, transforming our understanding of dark energy, stellar populations, and planetary systems.
+The **Nancy Grace Roman Space Telescope** is NASA's new flagship observatory, engineered to explore the infrared universe with unprecedented speed and precision. Its primary imaging camera, the **Wide Field Instrument (WFI)**, combines 18 Sensor Chip Assemblies (SCAs) totaling 300 megapixels to yield a 0.281 deg² field of view—roughly 100 times that of the Hubble Space Telescope at comparable resolution (0.11 arcsec/pixel).
 
-The **Galactic Bulge Time Domain Survey (GBTDS)** is one of Roman's core community surveys, repeatedly imaging ~2 square degrees of the extremely dense Milky Way bulge with ~15-minute cadence across six 62-day campaigns. By monitoring tens of millions of stars simultaneously, the GBTDS will discover thousands of exoplanets via gravitational microlensing (including cold gas giants, ice giants, Earth analogs, and free-floating rogue planets), measure stellar variability across millions of light curves, and map Milky Way structure. Because the Galactic bulge is intensely crowded and Roman's PSF is undersampled by the WFI pixel grid, precision forward-modeling PRF photometry and crowd-aware aperture photometry are essential. `roman-lcs` delivers this photometry engine, turning image cutouts from `roman-cuts` and ePSF models from `roman-epsf` into calibrated, high-precision light curves.
+A cornerstone community initiative of Roman is the **Galactic Bulge Time Domain Survey (GBTDS)**. By continuously monitoring ~2 square degrees in the dense, dust-obscured Milky Way bulge with ~12-minute sampling over six 62-day seasons in the near-infrared, the GBTDS will detect tens of thousands of exoplanets via the transiting method, measure stellar variability across millions of light curves, and map Milky Way structure.
+
+### The TRExS Project: Transits in the Roman Galactic EXoplanet Survey
+
+**TRExS** ([Transits in the Roman Galactic EXoplanet Survey](https://www.stsci.edu/contents/events/roman/2023/november/transits-in-the-roman-galactic-exoplanet-survey-trexs)) is a Wide Field Science initiative designed to maximize the transit science return from Roman's GBTDS. While the GBTDS is nominally optimized for gravitational microlensing, its high-cadence time-series imaging of hundreds of millions of stars toward the Galactic Center makes it one of the most powerful transiting exoplanet surveys ever conceived.
+
+Key pillars of TRExS include:
+- **Massive Exoplanet Yields:** TRExS is predicted to discover between **60,000 and 200,000 transiting exoplanets**, expanding the catalog of known exoplanets by orders of magnitude compared to Kepler and TESS.
+- **Statistical Demographics of Rare Systems:** The enormous sample size places stringent demographic constraints on intrinsically rare planetary architectures, ultra-short-period planets, planets orbiting evolved or giant stars, and brown dwarf companions.
+- **Galactic Depth & Diversity:** Probing deep through the Galactic disk into the inner bulge, TRExS observes stars across diverse stellar populations, metallicities, and Galactic environments, mapping how planet occurrence varies throughout the Milky Way.
+- **Near-Infrared Atmospheres:** Leveraging Roman's near-infrared bandpass (WFI F146 and companion filters), TRExS enables direct atmospheric detection and thermal emission measurements (e.g., secondary eclipses and phase curves) for thousands of transiting giant planets at a population level.
+- **Survey Synergy:** By pairing transit discoveries with microlensing detections in the same survey footprint, Roman and TRExS will establish a unified census of planetary systems spanning orbital separations from <0.1 AU out to free-floating planets.
+
+Because the Galactic bulge is intensely crowded and Roman's PSF is undersampled by the WFI pixel scale, precision forward-modeling Pixel Response Function (PRF) photometry and crowd-aware aperture photometry are essential. `roman-lcs` delivers this photometry engine within TRExS, turning target cutouts from `roman-cuts` and ePSF models from `roman-epsf` into calibrated, high-precision light curves.
 
 ---
 
@@ -96,10 +109,6 @@ extractor.to_fits("target_lightcurve.fits")
 An example simulated full-frame image from `RImTimSim`:
 
 ![sim_img](./figures/roman_wfi_field03_sca2_F146.png)
-
-The PRF model is computed from the image itself or loaded from an ePSF library, fitting all sources simultaneously:
-
-![prf_model](./figures/prf_model_field03_sca02_F146_center.png)
 
 Light curves are computed by fitting the PRF across every frame and saved into FITS files:
 
