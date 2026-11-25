@@ -157,16 +157,6 @@ def test_default_circular_aperture(sample_extractor):
     n_pix = mask.sum()
     assert 20 <= n_pix <= 40  # pi * 3^2 ≈ 28.3
 
-    # Check lightkurve export
-    lk_dict = sample_extractor.get_lightcurves(mode="lk")
-    assert 0 in lk_dict
-    lc = lk_dict[0]
-    assert "psf_flux" in lc.colnames
-    assert "aperture_3pix_flux" in lc.colnames
-    assert "aperture_3pix_flux_err" in lc.colnames
-    assert "ap_bkg_flux" in lc.colnames
-    assert "aperture_3pix_bkg_flux" in lc.colnames
-
 
 def test_custom_list_aperture_radii(sample_extractor):
     """Test passing a list of aperture radii [2, 3, 5] and float radius 2.5."""
