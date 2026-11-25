@@ -39,8 +39,8 @@ dev = [
 ]
 
 [tool.uv.sources]
-roman-cuts = { path = "../roman-cuts", editable = true }
-roman-epsf = { path = "../roman-epsf", editable = true }
+roman-cuts = { git = "https://github.com/jorgemarpa/roman-cuts.git"}
+roman-epsf = { git = "https://github.com/jorgemarpa/roman-epsf.git"}
 astroquery = { git = "https://github.com/astropy/astroquery.git", rev = "refs/pull/3593/head" }
 
 [build-system]
